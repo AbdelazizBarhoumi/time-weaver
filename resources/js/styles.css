@@ -1,0 +1,159 @@
+@import "tailwindcss" source(none);
+@source "./";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  /* ShiftGrid neon terminal tokens */
+  --color-void: var(--void);
+  --color-panel: var(--panel);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-mut: var(--mut);
+  --color-neon: var(--neon);
+  --color-l1: var(--l1);
+  --color-l2: var(--l2);
+  --color-l3: var(--l3);
+  --color-l4: var(--l4);
+  --color-l5: var(--l5);
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --ease-out-expo: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root {
+  --radius: 0.625rem;
+  --void: #0a0b0d;
+  --panel: #101215;
+  --line: #1d2026;
+  --ink: #e8eaed;
+  --mut: #6b717a;
+  --neon: #37f095;
+  --l1: #163a26;
+  --l2: #1f6b3f;
+  --l3: #27a05a;
+  --l4: #37f095;
+  --l5: #a8ffd6;
+
+  --background: var(--void);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel);
+  --popover-foreground: var(--ink);
+  --primary: var(--neon);
+  --primary-foreground: var(--void);
+  --secondary: var(--panel);
+  --secondary-foreground: var(--ink);
+  --muted: var(--panel);
+  --muted-foreground: var(--mut);
+  --accent: var(--panel);
+  --accent-foreground: var(--ink);
+  --destructive: #f0564d;
+  --destructive-foreground: var(--ink);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--neon);
+  --chart-1: var(--l5);
+  --chart-2: var(--l4);
+  --chart-3: var(--l3);
+  --chart-4: var(--l2);
+  --chart-5: var(--l1);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-display);
+  }
+}
+
+@utility grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(55, 240, 149, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(55, 240, 149, 0.05) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+@utility animate-rise {
+  animation: rise 0.5s var(--ease-out-expo) both;
+}
+
+@utility animate-rec {
+  animation: rec-pulse 1.5s var(--ease-out-expo) infinite;
+}
+
+@utility animate-ring-glow {
+  animation: ring-glow 2.6s var(--ease-out-expo) infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes ring-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(55, 240, 149, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 22px 0 rgba(55, 240, 149, 0.45);
+  }
+}
