@@ -54,10 +54,10 @@ export function TimerCard({ sessions, now, onStart, onPause, onResume, onStop, o
 
       <div className="mt-8 flex flex-col items-start gap-10 sm:flex-row sm:items-end">
         <div
-          className={`grid size-40 shrink-0 place-items-center rounded-full ${isRunning ? "animate-ring-glow" : ""}`}
+          className={`grid size-50 shrink-0 place-items-center rounded-full ${isRunning ? "animate-ring-glow" : ""}`}
           style={{ background: `conic-gradient(var(--neon) 0deg ${deg}deg, var(--line) ${deg}deg 360deg)` }}
         >
-          <div className="grid size-32 place-items-center rounded-full bg-panel">
+          <div className="grid size-40 place-items-center rounded-full bg-panel">
             <div className="text-center">
               <div className="font-mono text-3xl font-bold tabular-nums text-ink">{formatHMS(sessionMs)}</div>
               <div className="mt-1 font-mono text-[10px] tracking-[0.2em] text-mut">

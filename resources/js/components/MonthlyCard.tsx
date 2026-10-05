@@ -3,10 +3,14 @@ import { formatHM, monthlyBreakdown, type MonthStats, type WorkSession } from "@
 function MonthRow({ m }: { m: MonthStats }) {
   const over = m.paceDeltaHours >= 0;
   const pct = Math.round(m.progress * 100);
+  // Use abbreviated month name on small screens
+  const shortLabel = m.label.replace(/(\w{3})\w*/, "$1");
   return (
     <div className="py-2.5">
       <div className="flex items-baseline justify-between">
-        <div className="font-mono text-xs text-ink">{m.label}</div>
+        <div className="font-mono text-xs text-ink truncate max-w-[120px] sm:max-w-none">
+          {m.label}
+        </div>
         <div className="font-mono text-xs">
           <span className="text-ink">{m.doneHours.toFixed(1)}h</span>
           <span className="text-mut"> / {m.targetHours}h</span>

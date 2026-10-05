@@ -6,17 +6,33 @@ import { MonthlyCard } from "@/components/MonthlyCard";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TimerCard } from "@/components/TimerCard";
 import {
-  clearAll,
-  computeStats,
   dayKey,
   hoursForDay,
-  loadSessions,
-  newId,
-  saveSessions,
-  seedDemoData,
   DAILY_GOAL_HOURS,
   type WorkSession,
 } from "@/lib/tracker";
+import {
+  useSessions,
+  useTodaySessions,
+  useStats,
+  useMonthlyBreakdown,
+  useCreateSession,
+  useUpdateSession,
+  useDeleteSession,
+  useClearAllSessions,
+} from "@/lib/queries";
+import type { ApiWorkSession } from "@/lib/api";
+
+function apiToWorkSession(s: ApiWorkSession): WorkSession {
+  return {
+    id: String(s.id),
+    start: s.start,
+    end: s.end,
+    note: s.note,
+    pausedMs: s.pausedMs,
+    pausedAt: s.pausedAt,
+  };
+}
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -41,93 +57,115 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [manualOpen, setManualOpen] = useState(false);
 
-  useEffect(() => {
-    const loaded = loadSessions();
-    setSessions(loaded.length ? loaded : seedDemoData());
-  }, []);
+  const { data: sessions = [], isLoading, error } = useSessions();
+  const { data: todaySessionsData = [] } = useTodaySessions();
+  const { data: stats } = useStats();
+  const { data: monthlyBreakdown = [] } = useMonthlyBreakdown();
 
-  const hasActive = sessions.some((s) => !s.end);
+  const createSession = useCreateSession();
+  const updateSession = useUpdateSession();
+  const deleteSession = useDeleteSession();
+  const clearAllSessions = useClearAllSessions();
+
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const update = (next: WorkSession[]) => {
-    setSessions(next);
-    saveSessions(next);
-  };
+  const sessionsTyped = sessions as ApiWorkSession[];
+  const hasActive = sessionsTyped.some((s) => !s.end);
 
   const startSession = () => {
     if (hasActive) return;
-    update([
-      ...sessions,
-      { id: newId(), start: new Date().toISOString(), end: null, note: "", pausedMs: 0, pausedAt: null },
-    ]);
+    createSession.mutate({
+      start: new Date().toISOString(),
+    });
   };
 
   const pauseSession = () => {
-    update(
-      sessions.map((s) => (!s.end && !s.pausedAt ? { ...s, pausedAt: new Date().toISOString() } : s)),
-    );
+    const activeSession = sessionsTyped.find((s) => !s.end && !s.pausedAt);
+    if (activeSession) {
+      updateSession.mutate({
+        id: activeSession.id,
+        data: { paused_at: new Date().toISOString() },
+      });
+    }
   };
 
   const resumeSession = () => {
-    update(
-      sessions.map((s) =>
-        !s.end && s.pausedAt
-          ? { ...s, pausedMs: s.pausedMs + (Date.now() - new Date(s.pausedAt).getTime()), pausedAt: null }
-          : s,
-      ),
-    );
+    const pausedSession = sessionsTyped.find((s) => !s.end && s.pausedAt);
+    if (pausedSession && pausedSession.pausedAt) {
+      const pausedMs = pausedSession.pausedMs + (Date.now() - new Date(pausedSession.pausedAt).getTime());
+      updateSession.mutate({
+        id: pausedSession.id,
+        data: { paused_ms: pausedMs, paused_at: null },
+      });
+    }
   };
 
   const stopSession = () => {
-    update(
-      sessions.map((s) => {
-        if (s.end) return s;
-        const end = new Date().toISOString();
-        const pausedMs = s.pausedAt ? s.pausedMs + (Date.now() - new Date(s.pausedAt).getTime()) : s.pausedMs;
-        return { ...s, end, pausedMs, pausedAt: null };
-      }),
-    );
+    const activeSession = sessionsTyped.find((s) => !s.end);
+    if (activeSession) {
+      const pausedMs = activeSession.pausedAt
+        ? activeSession.pausedMs + (Date.now() - new Date(activeSession.pausedAt).getTime())
+        : activeSession.pausedMs;
+      updateSession.mutate({
+        id: activeSession.id,
+        data: { end: new Date().toISOString(), paused_ms: pausedMs, paused_at: null },
+      });
+    }
   };
 
-  const deleteSession = (id: string) => update(sessions.filter((s) => s.id !== id));
+  const handleDeleteSession = (id: string) => {
+    deleteSession.mutate(Number(id));
+  };
 
   const addManual = ({ date, start, end, note }: { date: string; start: string; end: string; note: string }) => {
-    update([
-      ...sessions,
-      {
-        id: newId(),
-        start: new Date(`${date}T${start}`).toISOString(),
-        end: new Date(`${date}T${end}`).toISOString(),
-        note,
-        pausedMs: 0,
-        pausedAt: null,
-      },
-    ]);
+    createSession.mutate({
+      start: new Date(`${date}T${start}`).toISOString(),
+      end: new Date(`${date}T${end}`).toISOString(),
+      note,
+    });
   };
 
   const resetAll = () => {
     if (window.confirm("Delete all tracked data? This cannot be undone.")) {
-      clearAll();
-      setSessions([]);
+      clearAllSessions.mutate();
     }
   };
 
-  const stats = useMemo(() => computeStats(sessions, now), [sessions, now]);
-  const todayHours = hoursForDay(sessions, dayKey(new Date(now)), now);
+  const workSessions = sessionsTyped.map(apiToWorkSession);
+  const todayHours = hoursForDay(workSessions, dayKey(new Date(now)), now);
 
   const statCards = [
-    { label: "STREAK", value: String(stats.streak), unit: stats.streak === 1 ? "day" : "days", neon: true },
-    { label: "THIS WEEK", value: stats.weekHours.toFixed(1), unit: "h", neon: false },
-    { label: "BEST DAY", value: stats.bestDayHours.toFixed(1), unit: "h", neon: false },
-    { label: "AVG / DAY", value: stats.avgPerActiveDay.toFixed(1), unit: "h", neon: false },
+    { label: "STREAK", value: String(stats?.streak ?? 0), unit: stats?.streak === 1 ? "day" : "days", neon: true },
+    { label: "THIS WEEK", value: stats?.weekHours.toFixed(1) ?? "0.0", unit: "h", neon: false },
+    { label: "BEST DAY", value: stats?.bestDayHours.toFixed(1) ?? "0.0", unit: "h", neon: false },
+    { label: "AVG / DAY", value: stats?.avgPerActiveDay.toFixed(1) ?? "0.0", unit: "h", neon: false },
   ];
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-void grid-bg font-display text-ink flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-neon font-mono">Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-void grid-bg font-display text-ink flex items-center justify-center">
+        <div className="text-center text-red-500">
+          Failed to load data. Please refresh the page.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-void grid-bg font-display text-ink">
@@ -147,7 +185,7 @@ function Index() {
               {todayHours.toFixed(1)}h <span className="text-mut">/ {DAILY_GOAL_HOURS}h</span>
             </div>
             <div className="rounded-lg bg-neon/10 px-3 py-2 font-mono text-xs text-neon ring-1 ring-neon/40">
-              ⚡ {stats.streak} streak
+              ⚡ {stats?.streak ?? 0} streak
             </div>
             <button
               onClick={resetAll}
@@ -161,7 +199,7 @@ function Index() {
 
         <main className="mt-8 grid grid-cols-12 gap-5">
           <TimerCard
-            sessions={sessions}
+            sessions={workSessions}
             now={now}
             onStart={startSession}
             onPause={pauseSession}
@@ -169,9 +207,9 @@ function Index() {
             onStop={stopSession}
             onAddManual={() => setManualOpen(true)}
           />
-          <SessionsPanel sessions={sessions} now={now} onDelete={deleteSession} />
-          <Heatmap sessions={sessions} now={now} />
-          <MonthlyCard sessions={sessions} now={now} />
+          <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} />
+          <Heatmap sessions={workSessions} now={now} />
+          <MonthlyCard sessions={workSessions} now={now} />
 
           <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-4">
             {statCards.map((c, i) => (
@@ -191,7 +229,7 @@ function Index() {
         </main>
 
         <footer className="mt-10 text-center font-mono text-[10px] tracking-[0.15em] text-mut">
-          DATA LIVES IN YOUR BROWSER · LOCALSTORAGE ONLY
+          DATA SYNCED WITH SERVER
         </footer>
       </div>
 

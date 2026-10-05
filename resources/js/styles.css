@@ -118,11 +118,11 @@
 }
 
 @utility animate-rec {
-  animation: rec-pulse 1.5s var(--ease-out-expo) infinite;
+  animation: rec-pulse 0.5s var(--ease-out-expo) infinite;
 }
 
 @utility animate-ring-glow {
-  animation: ring-glow 2.6s var(--ease-out-expo) infinite;
+  animation: ring-glow 4.6s var(--ease-out-expo) infinite;
 }
 
 @keyframes rise {
