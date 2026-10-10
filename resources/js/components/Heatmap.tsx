@@ -1,47 +1,77 @@
-import { useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { dayKey, hoursForDay, DAILY_GOAL_HOURS, type WorkSession } from "@/lib/tracker";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuLabel,
+  ContextMenuSub,
+  ContextMenuSubTrigger,
+  ContextMenuSubContent,
+} from "@/components/ui/context-menu";
+import { EyeIcon, PlusIcon, CalendarOffIcon, EditIcon, Trash2Icon, ChevronRightIcon } from "lucide-react";
+import { dayKey, hoursForDay, DAILY_GOAL_HOURS, levelFor, type CustomDayOff, type WorkSession, formatTime, formatHM, sessionDurationMs } from "@/lib/tracker";
 
 const LEVEL_CLASSES = ["bg-line", "bg-l1", "bg-l2", "bg-l3", "bg-l4", "bg-l5"];
 const WEEKS = 52;
 
-// Geometry: cell = size-3 (12px), gap = 3px -> each week column is 15px wide.
 const CELL = 12;
 const GAP = 3;
 const PITCH = CELL + GAP;
 
-// Rows are Monday-first, so Mon = row 0, Wed = row 2, Fri = row 4.
 const DAY_LABELS = ["Mon", "", "Wed", "", "Fri", "", ""];
 
-// Minimum number of week-columns between two month labels so they never overlap.
 const MIN_LABEL_GAP_WEEKS = 3;
-
-function levelFor(hours: number): number {
-  if (hours <= 0) return 0;
-  if (hours < 2) return 1;
-  if (hours < 4) return 2;
-  if (hours < 6) return 3;
-  if (hours < DAILY_GOAL_HOURS) return 4;
-  return 5;
-}
 
 interface Cell {
   key: string;
   date: Date;
   hours: number;
   future: boolean;
+  dayOffType: "excluded" | "included" | null;
 }
 
-export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: number }) {
+interface Props {
+  sessions: WorkSession[];
+  now: number;
+  customDayOffs: CustomDayOff[];
+  onToggleDayOff: (dateKey: string) => void;
+  onSetDayOffType: (dateKey: string, type: "excluded" | "included") => void;
+  onAddSession: (dateKey: string) => void;
+  onEditSession: (session: WorkSession) => void;
+  onDeleteSession: (id: string) => void;
+}
+
+export function Heatmap({
+  sessions,
+  now,
+  customDayOffs,
+  onToggleDayOff,
+  onSetDayOffType,
+  onAddSession,
+  onEditSession,
+  onDeleteSession,
+}: Props) {
+  const navigate = useNavigate();
   const [tooltip, setTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const todayKey = dayKey(new Date(now));
 
+  const dayOffMap = useMemo(() => {
+    const map = new Map<string, "excluded" | "included">();
+    for (const d of customDayOffs) {
+      map.set(d.date, d.type);
+    }
+    return map;
+  }, [customDayOffs]);
+
   const { weeks, monthLabels } = useMemo(() => {
     const today = new Date(now);
-    const dow = (today.getDay() + 6) % 7; // Mon = 0
-    // Monday of the week (WEEKS - 1) weeks before the current week
+    const dow = (today.getDay() + 6) % 7;
     const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow - (WEEKS - 1) * 7);
 
     const weeksArr: Cell[][] = [];
@@ -55,7 +85,8 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
         const date = new Date(cursor);
         const key = dayKey(date);
         const future = date.getTime() > now;
-        week.push({ key, date, hours: future ? 0 : hoursForDay(sessions, key, now), future });
+        const dayOffType = dayOffMap.get(key) ?? null;
+        week.push({ key, date, hours: future ? 0 : hoursForDay(sessions, key, now), future, dayOffType });
         cursor.setDate(cursor.getDate() + 1);
       }
       const firstOfWeek = week[0]!.date;
@@ -66,15 +97,13 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
       weeksArr.push(week);
     }
 
-    // The first month is often only a column or two wide; drop its label if it would crowd the next one.
     if (labels.length > 1 && labels[1]!.weekIndex - labels[0]!.weekIndex < MIN_LABEL_GAP_WEEKS) {
       labels.shift();
     }
 
     return { weeks: weeksArr, monthLabels: labels };
-  }, [sessions, now]);
+  }, [sessions, now, dayOffMap]);
 
-  // Start scrolled to the right so the current week is visible.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollLeft = el.scrollWidth;
@@ -85,24 +114,49 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
     if (!wrap) return;
     const c = e.currentTarget.getBoundingClientRect();
     const w = wrap.getBoundingClientRect();
-    const half = 60; // keep the tooltip inside the card
+    const half = 60;
     const x = Math.min(Math.max(c.left - w.left + c.width / 2, half), w.width - half);
-    setTooltip({
-      text: cell.future
-        ? cell.date.toLocaleDateString("en", { month: "short", day: "numeric" })
-        : `${cell.hours.toFixed(1)}h · ${cell.date.toLocaleDateString("en", {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-          })}`,
-      x,
-      y: c.top - w.top,
-    });
+    let text: string;
+    const dateLabel = cell.date.toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
+    if (cell.future) {
+      text = cell.date.toLocaleDateString("en", { month: "short", day: "numeric" });
+    } else if (cell.dayOffType === "excluded") {
+      text = `Day off (hours excluded) · ${dateLabel}`;
+    } else if (cell.dayOffType === "included") {
+      text = `Day off (hours required) · ${dateLabel}`;
+    } else {
+      text = `${cell.hours.toFixed(1)}h · ${dateLabel}`;
+    }
+    setTooltip({ text, x, y: c.top - w.top });
+  };
+
+  const isCellInteractive = (cell: Cell) => !cell.future && cell.key !== todayKey;
+
+  const handleCellClick = (cell: Cell) => {
+    if (!isCellInteractive(cell)) return;
+    if (cell.dayOffType) {
+      onToggleDayOff(cell.key);
+    } else {
+      onSetDayOffType(cell.key, "excluded");
+    }
+  };
+
+  const getSessionsForDay = (dateKey: string) => {
+    return sessions.filter((s) => dayKey(s.start) === dateKey);
+  };
+
+  const formatSessionTime = (session: WorkSession) => {
+    const ms = sessionDurationMs(session, now);
+    const running = !session.end;
+    const timeStr = `${formatTime(session.start)} – ${session.end ? formatTime(session.end) : "now"}`;
+    const durationStr = formatHM(ms);
+    const status = running && !session.pausedAt ? " 🔴 Live" : running ? " ⏸ Paused" : "";
+    return { timeStr, durationStr, status };
   };
 
   return (
     <section
-      className="col-span-12 rounded-xl bg-panel p-7 ring-1 ring-line animate-rise"
+      className="col-span-12 rounded-xl bg-panel p-7 ring-1 ring-line animate-rise relative z-10"
       style={{ animationDelay: "180ms" }}
     >
       <div className="flex items-center justify-between">
@@ -117,10 +171,8 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
       </div>
 
       <div ref={wrapRef} className="relative mt-5">
-        {/* One scroll container for labels + grid so they always move together */}
         <div ref={scrollRef} className="overflow-x-auto pb-2" onScroll={() => setTooltip(null)}>
           <div className="flex w-max gap-2 pr-4">
-            {/* Weekday labels: sticky so they stay visible while scrolling */}
             <div className="sticky left-0 z-10 shrink-0 bg-panel pr-1">
               <div className="h-4" />
               <div className="grid grid-rows-7 font-mono text-[9px] text-mut" style={{ gap: GAP }}>
@@ -133,7 +185,6 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
             </div>
 
             <div>
-              {/* Month labels, positioned on the exact week column they belong to */}
               <div className="relative h-4">
                 {monthLabels.map((m) => (
                   <span
@@ -152,16 +203,173 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
                     {week.map((cell, d) => {
                       const level = cell.future ? 0 : levelFor(cell.hours);
                       const isToday = cell.key === todayKey;
+                      const interactive = isCellInteractive(cell);
+                      const daySessions = getSessionsForDay(cell.key);
+
+                      let baseClass = `size-3 rounded-[3px] animate-rise ${isToday ? "ring-1 ring-neon" : ""}`;
+
+                      if (cell.future) {
+                        baseClass += " bg-line/40 cursor-default";
+                      } else if (cell.dayOffType === "excluded") {
+                        baseClass += " bg-line relative cursor-pointer hover:ring-2 hover:ring-neon/50";
+                      } else if (cell.dayOffType === "included") {
+                        baseClass += " relative cursor-pointer hover:ring-2 hover:ring-neon/50";
+                        baseClass += level > 0 ? ` ${LEVEL_CLASSES[level]} opacity-40` : " bg-line";
+                      } else {
+                        baseClass += ` ${LEVEL_CLASSES[level]} ${interactive ? "cursor-pointer hover:ring-2 hover:ring-neon/50" : "cursor-default"}`;
+                      }
+
                       return (
-                        <span
-                          key={cell.key}
-                          className={`size-3 rounded-[3px] ${
-                            cell.future ? "bg-line/40" : LEVEL_CLASSES[level]
-                          } animate-rise ${isToday ? "ring-1 ring-neon" : ""}`}
-                          style={{ animationDelay: `${Math.min(w * 12 + d * 4, 600)}ms` }}
-                          onMouseEnter={(e) => showTooltip(e, cell)}
-                          onMouseLeave={() => setTooltip(null)}
-                        />
+                        <ContextMenu key={cell.key}>
+                          <ContextMenuTrigger asChild>
+                            <span
+                              className={baseClass}
+                              style={{ animationDelay: `${Math.min(w * 12 + d * 4, 600)}ms` }}
+                              onMouseEnter={(e) => showTooltip(e, cell)}
+                              onMouseLeave={() => setTooltip(null)}
+                              onClick={() => handleCellClick(cell)}
+                            >
+                              {cell.dayOffType === "excluded" && !cell.future && (
+                                <span className="absolute inset-0 flex items-center justify-center text-[8px] text-mut/60 select-none">
+                                  ⊘
+                                </span>
+                              )}
+                              {cell.dayOffType === "included" && !cell.future && (
+                                <span className="absolute inset-0 flex items-center justify-center text-[8px] text-mut/70 select-none">
+                                  ⏸
+                                </span>
+                              )}
+                            </span>
+                          </ContextMenuTrigger>
+                          <ContextMenuContent className="min-w-[200px] max-w-[280px] max-h-[60vh] overflow-auto">
+                            <ContextMenuLabel className="px-3 py-1.5 font-mono text-xs tracking-[0.1em] text-mut">
+                              {cell.date.toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
+                            </ContextMenuLabel>
+                            <ContextMenuSeparator />
+
+                            <ContextMenuItem
+                              className="font-medium flex items-center gap-2"
+                              onSelect={() => navigate({ to: `/day/${cell.key}` })}
+                            >
+                              <EyeIcon className="h-4 w-4 text-neon" />
+                              View details
+                            </ContextMenuItem>
+
+                            {!cell.future && (
+                              <>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem
+                                  className="flex items-center gap-2"
+                                  onSelect={() => onAddSession(cell.key)}
+                                >
+                                  <PlusIcon className="h-4 w-4" />
+                                  Add session
+                                </ContextMenuItem>
+                              </>
+                            )}
+
+                            {daySessions.length > 0 && (
+                              <>
+                                <ContextMenuSeparator />
+                                <ContextMenuLabel className="px-3 py-1 font-mono text-[10px] text-mut">
+                                  Sessions ({daySessions.length})
+                                </ContextMenuLabel>
+                                {daySessions.slice(0, 5).map((s) => {
+                                  const { timeStr, durationStr, status } = formatSessionTime(s);
+                                  const running = !s.end;
+                                  return (
+                                    <ContextMenuItem
+                                      key={s.id}
+                                      className="px-3 py-1.5 text-xs flex flex-col gap-0.5"
+                                      onSelect={() => !running && onEditSession(s)}
+                                      disabled={running}
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="font-mono truncate flex-1">
+                                          {timeStr}
+                                          <span className="text-neon ml-1">({durationStr})</span>
+                                          {status && <span className="text-[10px] ml-1">{status}</span>}
+                                        </span>
+                                        {!running && <EditIcon className="h-3.5 w-3.5 text-mut opacity-50" />}
+                                      </div>
+                                      {s.note && <div className="text-[10px] text-mut truncate ml-6">• {s.note}</div>}
+                                    </ContextMenuItem>
+                                  );
+                                })}
+                                {daySessions.length > 5 && (
+                                  <ContextMenuItem className="px-3 py-1 text-xs text-mut text-center" disabled>
+                                    + {daySessions.length - 5} more…
+                                  </ContextMenuItem>
+                                )}
+                              </>
+                            )}
+
+                            <ContextMenuSeparator />
+                            <ContextMenuSub>
+                              <ContextMenuSubTrigger className="font-mono text-xs flex items-center gap-2">
+                                <CalendarOffIcon className="h-4 w-4" />
+                                Day off
+                                <ChevronRightIcon className="ml-auto h-3.5 w-3.5" />
+                              </ContextMenuSubTrigger>
+                              <ContextMenuSubContent className="min-w-[180px]">
+                                {cell.dayOffType === null ? (
+                                  <>
+                                    <ContextMenuItem
+                                      className="flex items-center gap-2"
+                                      onSelect={() => {
+                                        onSetDayOffType(cell.key, "excluded");
+                                      }}
+                                    >
+                                      <span className="text-[10px]">⊘</span>
+                                      Exclude hours from target
+                                    </ContextMenuItem>
+                                    <ContextMenuItem
+                                      className="flex items-center gap-2"
+                                      onSelect={() => {
+                                        onSetDayOffType(cell.key, "included");
+                                      }}
+                                    >
+                                      <span className="text-[10px]">⏸</span>
+                                      Include hours in target
+                                    </ContextMenuItem>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ContextMenuLabel className="px-3 py-1 font-mono text-[10px] text-mut">
+                                      {cell.dayOffType === "excluded"
+                                        ? "Currently: hours excluded from target"
+                                        : "Currently: hours still counted toward target"}
+                                    </ContextMenuLabel>
+                                    <ContextMenuItem
+                                      className="flex items-center gap-2"
+                                      onSelect={() => {
+                                        onSetDayOffType(
+                                          cell.key,
+                                          cell.dayOffType === "excluded" ? "included" : "excluded"
+                                        );
+                                      }}
+                                    >
+                                      Switch to{" "}
+                                      {cell.dayOffType === "excluded"
+                                        ? <span>⏸ include hours</span>
+                                        : <span>⊘ exclude hours</span>}
+                                    </ContextMenuItem>
+                                    <ContextMenuSeparator />
+                                    <ContextMenuItem
+                                      className="flex items-center gap-2 text-destructive"
+                                      onSelect={() => {
+                                        onToggleDayOff(cell.key);
+                                      }}
+                                    >
+                                      <Trash2Icon className="h-4 w-4" />
+                                      Remove day off
+                                    </ContextMenuItem>
+                                  </>
+                                )}
+                              </ContextMenuSubContent>
+                            </ContextMenuSub>
+                          </ContextMenuContent>
+                        </ContextMenu>
                       );
                     })}
                   </div>
@@ -171,7 +379,6 @@ export function Heatmap({ sessions, now }: { sessions: WorkSession[]; now: numbe
           </div>
         </div>
 
-        {/* Outside the scroll container so it isn't clipped */}
         {tooltip && (
           <div
             className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-void px-2 py-1 font-mono text-[10px] text-ink ring-1 ring-line"

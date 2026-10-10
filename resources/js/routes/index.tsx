@@ -5,10 +5,17 @@ import { ManualEntryDialog } from "@/components/ManualEntryDialog";
 import { MonthlyCard } from "@/components/MonthlyCard";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TimerCard } from "@/components/TimerCard";
+import { FloatingTimerWidget } from "@/components/FloatingTimerWidget";
+import { EditSessionDialog } from "@/components/EditSessionDialog";
 import {
   dayKey,
   hoursForDay,
   DAILY_GOAL_HOURS,
+  startSegments,
+  pauseSegments,
+  resumeSegments,
+  stopSegments,
+  type CustomDayOff,
   type WorkSession,
 } from "@/lib/tracker";
 import {
@@ -19,7 +26,9 @@ import {
   useCreateSession,
   useUpdateSession,
   useDeleteSession,
-  useClearAllSessions,
+  useDayOffs,
+  useAddDayOff,
+  useRemoveDayOff,
 } from "@/lib/queries";
 import type { ApiWorkSession } from "@/lib/api";
 
@@ -31,6 +40,8 @@ function apiToWorkSession(s: ApiWorkSession): WorkSession {
     note: s.note,
     pausedMs: s.pausedMs,
     pausedAt: s.pausedAt,
+    segments: s.segments,
+    segmentsInferred: s.segmentsInferred,
   };
 }
 
@@ -59,16 +70,30 @@ export const Route = createFileRoute("/")({
 function Index() {
   const [now, setNow] = useState(() => Date.now());
   const [manualOpen, setManualOpen] = useState(false);
+  const [manualDate, setManualDate] = useState<string | undefined>(undefined);
+  const [editSession, setEditSession] = useState<WorkSession | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
 
   const { data: sessions = [], isLoading, error } = useSessions();
   const { data: todaySessionsData = [] } = useTodaySessions();
   const { data: stats } = useStats();
   const { data: monthlyBreakdown = [] } = useMonthlyBreakdown();
+  const { data: dayOffs = [] } = useDayOffs();
 
   const createSession = useCreateSession();
   const updateSession = useUpdateSession();
   const deleteSession = useDeleteSession();
-  const clearAllSessions = useClearAllSessions();
+  const addDayOff = useAddDayOff();
+  const removeDayOff = useRemoveDayOff();
+
+  const customDayOffs = useMemo(
+    () =>
+      dayOffs.map((d: { date: string; type: "excluded" | "included" }) => ({
+        date: d.date,
+        type: d.type,
+      })),
+    [dayOffs]
+  );
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -82,6 +107,7 @@ function Index() {
     if (hasActive) return;
     createSession.mutate({
       start: new Date().toISOString(),
+      segments: startSegments(Date.now()),
     });
   };
 
@@ -90,18 +116,17 @@ function Index() {
     if (activeSession) {
       updateSession.mutate({
         id: activeSession.id,
-        data: { paused_at: new Date().toISOString() },
+        data: { segments: pauseSegments(activeSession.segments, Date.now()) },
       });
     }
   };
 
   const resumeSession = () => {
     const pausedSession = sessionsTyped.find((s) => !s.end && s.pausedAt);
-    if (pausedSession && pausedSession.pausedAt) {
-      const pausedMs = pausedSession.pausedMs + (Date.now() - new Date(pausedSession.pausedAt).getTime());
+    if (pausedSession) {
       updateSession.mutate({
         id: pausedSession.id,
-        data: { paused_ms: pausedMs, paused_at: null },
+        data: { segments: resumeSegments(pausedSession.segments, Date.now()) },
       });
     }
   };
@@ -109,12 +134,9 @@ function Index() {
   const stopSession = () => {
     const activeSession = sessionsTyped.find((s) => !s.end);
     if (activeSession) {
-      const pausedMs = activeSession.pausedAt
-        ? activeSession.pausedMs + (Date.now() - new Date(activeSession.pausedAt).getTime())
-        : activeSession.pausedMs;
       updateSession.mutate({
         id: activeSession.id,
-        data: { end: new Date().toISOString(), paused_ms: pausedMs, paused_at: null },
+        data: { end: new Date().toISOString(), segments: stopSegments(activeSession.segments, Date.now()) },
       });
     }
   };
@@ -123,18 +145,35 @@ function Index() {
     deleteSession.mutate(Number(id));
   };
 
+  const handleEditSession = (session: WorkSession) => {
+    setEditSession(session);
+    setEditOpen(true);
+  };
+
+  const handleToggleDayOff = (dateKey: string) => {
+    const exists = customDayOffs.some((d) => d.date === dateKey);
+    if (exists) {
+      removeDayOff.mutate(dateKey);
+    } else {
+      addDayOff.mutate({ date: dateKey, type: "excluded" });
+    }
+  };
+
+  const handleSetDayOffType = (dateKey: string, type: "excluded" | "included") => {
+    addDayOff.mutate({ date: dateKey, type });
+  };
+
+  const handleAddSession = (dateKey: string) => {
+    setManualDate(dateKey);
+    setManualOpen(true);
+  };
+
   const addManual = ({ date, start, end, note }: { date: string; start: string; end: string; note: string }) => {
     createSession.mutate({
       start: new Date(`${date}T${start}`).toISOString(),
       end: new Date(`${date}T${end}`).toISOString(),
       note,
     });
-  };
-
-  const resetAll = () => {
-    if (window.confirm("Delete all tracked data? This cannot be undone.")) {
-      clearAllSessions.mutate();
-    }
   };
 
   const workSessions = sessionsTyped.map(apiToWorkSession);
@@ -187,17 +226,10 @@ function Index() {
             <div className="rounded-lg bg-neon/10 px-3 py-2 font-mono text-xs text-neon ring-1 ring-neon/40">
               ⚡ {stats?.streak ?? 0} streak
             </div>
-            <button
-              onClick={resetAll}
-              title="Clear all data"
-              className="rounded-lg bg-panel px-3 py-2 font-mono text-xs text-mut ring-1 ring-line transition hover:ring-neon/40"
-            >
-              Reset
-            </button>
           </div>
         </header>
 
-        <main className="mt-8 grid grid-cols-12 gap-5">
+<main className="mt-8 grid grid-cols-12 gap-5">
           <TimerCard
             sessions={workSessions}
             now={now}
@@ -205,11 +237,20 @@ function Index() {
             onPause={pauseSession}
             onResume={resumeSession}
             onStop={stopSession}
-            onAddManual={() => setManualOpen(true)}
+            onAddManual={() => { setManualDate(undefined); setManualOpen(true); }}
           />
-          <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} />
-          <Heatmap sessions={workSessions} now={now} />
-          <MonthlyCard sessions={workSessions} now={now} />
+          <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} onEdit={handleEditSession} />
+          <Heatmap
+            sessions={workSessions}
+            now={now}
+            customDayOffs={customDayOffs}
+            onToggleDayOff={handleToggleDayOff}
+            onSetDayOffType={handleSetDayOffType}
+            onAddSession={handleAddSession}
+            onEditSession={handleEditSession}
+            onDeleteSession={handleDeleteSession}
+          />
+          <MonthlyCard sessions={workSessions} now={now} customDayOffs={customDayOffs} />
 
           <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-4">
             {statCards.map((c, i) => (
@@ -233,7 +274,26 @@ function Index() {
         </footer>
       </div>
 
-      <ManualEntryDialog open={manualOpen} onClose={() => setManualOpen(false)} onAdd={addManual} />
+      <FloatingTimerWidget
+        sessions={workSessions}
+        now={now}
+        onPause={pauseSession}
+        onResume={resumeSession}
+        onStop={stopSession}
+      />
+      <ManualEntryDialog open={manualOpen} onClose={() => { setManualOpen(false); setManualDate(undefined); }} onAdd={addManual} initialDate={manualDate} />
+      <EditSessionDialog
+        open={editOpen}
+        session={editSession}
+        onClose={() => {
+          setEditOpen(false);
+          setEditSession(null);
+        }}
+        onSuccess={() => {
+          setEditOpen(false);
+          setEditSession(null);
+        }}
+      />
     </div>
   );
 }

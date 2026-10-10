@@ -1,4 +1,4 @@
-import { formatHM, monthlyBreakdown, type MonthStats, type WorkSession } from "@/lib/tracker";
+import { formatHM, monthlyBreakdown, type CustomDayOff, type MonthStats, type WorkSession } from "@/lib/tracker";
 
 function MonthRow({ m }: { m: MonthStats }) {
   const over = m.paceDeltaHours >= 0;
@@ -32,13 +32,18 @@ function MonthRow({ m }: { m: MonthStats }) {
             : `${Math.abs(m.paceDeltaHours).toFixed(1)}h vs target`}
         </span>
       </div>
+      {m.customDaysOff > 0 && (
+        <div className="mt-1 font-mono text-[9px] text-mut">
+          {m.customDaysOff} custom day{ m.customDaysOff === 1 ? "" : "s" } off
+        </div>
+      )}
     </div>
   );
 }
 
-export function MonthlyCard({ sessions, now }: { sessions: WorkSession[]; now: number }) {
-  const current = monthlyBreakdown(sessions, now, 1)[0]!;
-  const months = monthlyBreakdown(sessions, now, 4);
+export function MonthlyCard({ sessions, now, customDayOffs }: { sessions: WorkSession[]; now: number; customDayOffs: CustomDayOff[] }) {
+  const current = monthlyBreakdown(sessions, now, 1, customDayOffs)[0]!;
+  const months = monthlyBreakdown(sessions, now, 4, customDayOffs);
   const deg = Math.round(current.progress * 360);
 
   const statusLine = (() => {

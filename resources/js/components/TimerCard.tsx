@@ -82,46 +82,47 @@ export function TimerCard({ sessions, now, onStart, onPause, onResume, onStop, o
               {progress >= 1 ? " · goal hit ✓" : ` · ${remaining.toFixed(1)}h to goal`}
             </span>
           </div>
-          <div className="mt-6 flex flex-wrap gap-2">
-            {!active && (
+<div className="mt-6 flex flex-wrap gap-2">
+              {!active && (
+                <button
+                  onClick={onStart}
+                  className="rounded-lg bg-neon px-5 py-2 text-sm font-semibold text-void ring-1 ring-neon/40 transition hover:brightness-110"
+                >
+                  Start session
+                </button>
+              )}
+              {isRunning && (
+                <button
+                  onClick={onPause}
+                  className="rounded-lg bg-neon px-5 py-2 text-sm font-semibold text-void ring-1 ring-neon/40 transition hover:brightness-110"
+                >
+                  Pause
+                </button>
+              )}
+              {isPaused && (
+                <button
+                  onClick={onResume}
+                  className="rounded-lg bg-neon px-5 py-2 text-sm font-semibold text-void ring-1 ring-neon/40 transition hover:brightness-110"
+                >
+                  Resume
+                </button>
+              )}
+              {active && (
+                <button
+                  onClick={onStop}
+                  className="rounded-lg bg-panel px-5 py-2 text-sm font-medium text-ink ring-1 ring-line transition hover:ring-neon/40"
+                >
+                  Stop
+                </button>
+              )}
+              
               <button
-                onClick={onStart}
-                className="rounded-lg bg-neon px-5 py-2 text-sm font-semibold text-void ring-1 ring-neon/40 transition hover:brightness-110"
+                onClick={onAddManual}
+                className="rounded-lg bg-panel px-5 py-2 text-sm font-medium text-mut ring-1 ring-line transition hover:ring-neon/40"
               >
-                Start session
+                Add manual
               </button>
-            )}
-            {isRunning && (
-              <button
-                onClick={onPause}
-                className="rounded-lg bg-neon px-5 py-2 text-sm font-semibold text-void ring-1 ring-neon/40 transition hover:brightness-110"
-              >
-                Pause
-              </button>
-            )}
-            {isPaused && (
-              <button
-                onClick={onResume}
-                className="rounded-lg bg-neon px-5 py-2 text-sm font-semibold text-void ring-1 ring-neon/40 transition hover:brightness-110"
-              >
-                Resume
-              </button>
-            )}
-            {active && (
-              <button
-                onClick={onStop}
-                className="rounded-lg bg-panel px-5 py-2 text-sm font-medium text-ink ring-1 ring-line transition hover:ring-neon/40"
-              >
-                Stop
-              </button>
-            )}
-            <button
-              onClick={onAddManual}
-              className="rounded-lg bg-panel px-5 py-2 text-sm font-medium text-mut ring-1 ring-line transition hover:ring-neon/40"
-            >
-              Add manual
-            </button>
-          </div>
+            </div>
         </div>
       </div>
     </section>

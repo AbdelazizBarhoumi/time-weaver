@@ -10,6 +10,12 @@ declare global {
     }
 }
 
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw-timer.js").catch(() => {
+    // Service worker registration failed silently
+  });
+}
+
 const router = getRouter();
 
 if (!window.__ROUTER__) {

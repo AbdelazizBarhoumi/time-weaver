@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { useLocation, useRouter } from '@tanstack/react-router';
 import { useUser, useLogin, useRegister, useLogout } from './queries';
 
 interface User {
@@ -18,7 +19,12 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { data: user, isLoading, refetch } = useUser();
+  const location = useLocation();
+  const isLoginPage = location.pathname === '/login';
+  
+  const { data: user, isLoading, refetch } = useUser({
+    enabled: !isLoginPage,
+  });
   const loginMutation = useLogin();
   const registerMutation = useRegister();
   const logoutMutation = useLogout();

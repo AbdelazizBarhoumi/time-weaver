@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { dayKey } from "@/lib/tracker";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
 
@@ -6,18 +6,24 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onAdd: (entry: { date: string; start: string; end: string; note: string }) => void;
+  initialDate?: string | undefined;
 }
 
-export function ManualEntryDialog({ open, onClose, onAdd }: Props) {
-  const [date, setDate] = useState(dayKey(new Date()));
+export function ManualEntryDialog({ open, onClose, onAdd, initialDate }: Props) {
+  const [date, setDate] = useState(() => initialDate ?? dayKey(new Date()));
   const [start, setStart] = useState("09:00");
   const [end, setEnd] = useState("17:00");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    if (initialDate) {
+      setDate(initialDate);
+    }
+  }, [initialDate]);
+
   if (!open) return null;
 
-  // The picker gives us "HH:MM - HH:MM"
   const handleTimeRange = (v: string) => {
     const [s, e] = v.split(" - ");
     if (s && e) {

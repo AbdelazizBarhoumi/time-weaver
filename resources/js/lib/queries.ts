@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { sessionsApi, authApi, type ApiWorkSession, type ApiStats, type ApiMonthStats } from './api';
+import { sessionsApi, authApi, dayOffsApi, type ApiWorkSession, type ApiStats, type ApiMonthStats, type ApiDayOff } from './api';
+import type { Segment } from './tracker';
 
 export function useSessions(params?: { from?: string; to?: string; month?: string; per_page?: number }) {
   return useQuery({
@@ -32,7 +33,7 @@ export function useMonthlyBreakdown(count = 4) {
 export function useCreateSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { start: string; end?: string; note?: string; paused_ms?: number; paused_at?: string }) =>
+    mutationFn: (data: { start: string; end?: string; note?: string; paused_ms?: number; paused_at?: string; segments?: Segment[] }) =>
       sessionsApi.create(data).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
@@ -46,7 +47,7 @@ export function useCreateSession() {
 export function useUpdateSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ start: string; end: string; note: string; paused_ms: number; paused_at: string | null }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ start: string; end: string; note: string; paused_ms: number; paused_at: string | null; segments: Segment[] }> }) =>
       sessionsApi.update(id, data).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
@@ -131,5 +132,45 @@ export function useUser() {
       }
     },
     retry: false,
+  });
+}
+
+export function useDayOffs() {
+  return useQuery({
+    queryKey: ['dayOffs'],
+    queryFn: () => dayOffsApi.list().then(res => res.data),
+  });
+}
+
+export function useAddDayOff() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ date, type }: { date: string; type?: 'excluded' | 'included' }) =>
+      dayOffsApi.create(date, type).then(res => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dayOffs'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions', 'stats'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions', 'monthly'] });
+    },
+  });
+}
+
+export function useRemoveDayOff() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (date: string) => dayOffsApi.delete(date),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dayOffs'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions', 'stats'] });
+      queryClient.invalidateQueries({ queryKey: ['sessions', 'monthly'] });
+    },
+  });
+}
+
+export function useDaySessions(dateKey: string) {
+  return useQuery({
+    queryKey: ['sessions', 'day', dateKey],
+    queryFn: () => sessionsApi.list({ from: dateKey, to: dateKey }).then(res => res.data.data),
+    enabled: !!dateKey,
   });
 }

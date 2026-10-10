@@ -16,6 +16,8 @@ class WorkSessionResource extends JsonResource
             'note' => $this->note,
             'pausedMs' => $this->paused_ms,
             'pausedAt' => $this->paused_at?->toISOString(),
+            'segments' => $this->effectiveSegments(),
+            'segmentsInferred' => $this->segments === null,
             'durationMs' => $this->duration_ms,
             'durationHours' => $this->duration_hours,
             'isActive' => $this->is_active,

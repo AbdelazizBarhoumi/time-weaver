@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\DayOffController;
 use App\Http\Controllers\WorkSessionController;
 use App\Models\WorkSession;
 use Illuminate\Support\Facades\Gate;
@@ -21,6 +22,10 @@ Route::middleware('auth:web')->group(function () {
 
     Route::apiResource('sessions', WorkSessionController::class)
         ->only(['index', 'store', 'show', 'update', 'destroy']);
+
+    Route::get('day-offs', [DayOffController::class, 'index']);
+    Route::post('day-offs', [DayOffController::class, 'store']);
+    Route::delete('day-offs/{date}', [DayOffController::class, 'destroy']);
 
     // Debug route
     Route::get('/debug-policy', function () {

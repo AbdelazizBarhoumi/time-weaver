@@ -4,9 +4,16 @@
     "type": "module",
     "scripts": {
         "build": "vite build",
-        "dev": "vite"
+        "dev": "vite",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:ui": "vitest --ui",
+        "test:coverage": "vitest run --coverage",
+        "test:php": "php artisan test",
+        "test:all": "npm run test && npm run test:php"
     },
     "dependencies": {
+        "@radix-ui/react-context-menu": "^2.3.8",
         "@radix-ui/react-popover": "^1.1.23",
         "@radix-ui/react-slot": "^1.3.3",
         "@tanstack/react-query": "^5.0.0",
@@ -24,15 +31,21 @@
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",
+        "@testing-library/jest-dom": "^7.0.1",
+        "@testing-library/react": "^16.3.3",
+        "@testing-library/user-event": "^14.6.7",
         "@types/react": "^18.2.0",
         "@types/react-dom": "^18.2.0",
         "@vitejs/plugin-react": "^4.3.0",
+        "@vitest/coverage-v8": "^4.1.11",
         "concurrently": "^10.0.3",
+        "happy-dom": "^20.14.5",
         "laravel-vite-plugin": "^1.3.0",
         "tailwindcss": "^4.0.0",
         "typescript": "^5.0.0",
         "vite": "^5.4.0",
-        "vite-tsconfig-paths": "^5.0.0"
+        "vite-tsconfig-paths": "^5.0.0",
+        "vitest": "^4.1.11"
     },
     "optionalDependencies": {
         "@laravel/multiplex": "^0.4.1"

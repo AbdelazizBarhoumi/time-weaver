@@ -1,12 +1,17 @@
+import { useState } from "react";
+import { ChevronDownIcon } from "lucide-react";
 import { formatHM, formatTime, sessionDurationMs, todaySessions, type WorkSession } from "@/lib/tracker";
+import { SegmentBreakdown } from "@/components/SegmentBreakdown";
 
 interface Props {
   sessions: WorkSession[];
   now: number;
   onDelete: (id: string) => void;
+  onEdit: (session: WorkSession) => void;
 }
 
-export function SessionsPanel({ sessions, now, onDelete }: Props) {
+export function SessionsPanel({ sessions, now, onDelete, onEdit }: Props) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const today = todaySessions(sessions, now);
 
   return (
@@ -23,21 +28,29 @@ export function SessionsPanel({ sessions, now, onDelete }: Props) {
         {today.map((s, i) => {
           const ms = sessionDurationMs(s, now);
           const running = !s.end;
+          const expanded = expandedId === s.id;
           return (
             <div
               key={s.id}
-              className={`group flex items-center justify-between py-2 ${i < today.length - 1 ? "border-b border-line" : ""}`}
+              className={i < today.length - 1 ? "border-b border-line" : ""}
             >
-              <div>
-                <div className="font-mono text-sm text-ink">
-                  {formatTime(s.start)} – {s.end ? formatTime(s.end) : "now"}
-                  {running && s.pausedAt && <span className="ml-2 text-[10px] text-mut">(paused)</span>}
+              <div className="group flex items-center justify-between py-2">
+                <div>
+                  <div className="font-mono text-sm text-ink">
+                    {formatTime(s.start)} – {s.end ? formatTime(s.end) : "now"}
+                    {running && s.pausedAt && <span className="ml-2 text-[10px] text-mut">(paused)</span>}
+                  </div>
+                  <div className="mt-1 font-mono text-[10px] text-mut">{s.note || (running ? "active" : "—")}</div>
                 </div>
-                <div className="mt-1 font-mono text-[10px] text-mut">{s.note || (running ? "active" : "—")}</div>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="font-mono text-sm text-neon">{formatHM(ms)}</div>
-                {!running && (
+                <div className="flex items-center gap-3">
+                  <div className="font-mono text-sm text-neon">{formatHM(ms)}</div>
+                  <button
+                    onClick={() => onEdit(s)}
+                    aria-label="Edit session"
+                    className="font-mono text-xs text-mut opacity-0 transition group-hover:opacity-100 hover:text-neon"
+                  >
+                    ✎
+                  </button>
                   <button
                     onClick={() => onDelete(s.id)}
                     aria-label="Delete session"
@@ -45,8 +58,23 @@ export function SessionsPanel({ sessions, now, onDelete }: Props) {
                   >
                     ✕
                   </button>
-                )}
+                  <button
+                    onClick={() => setExpandedId(expanded ? null : s.id)}
+                    aria-label="Toggle segment breakdown"
+                    aria-expanded={expanded}
+                    className="text-mut transition hover:text-neon"
+                  >
+                    <ChevronDownIcon
+                      className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                </div>
               </div>
+              {expanded && (
+                <div className="pb-3">
+                  <SegmentBreakdown session={s} now={now} />
+                </div>
+              )}
             </div>
           );
         })}

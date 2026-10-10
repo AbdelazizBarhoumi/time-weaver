@@ -9,6 +9,7 @@ use App\Models\WorkSession;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 
 class WorkSessionController extends Controller
 {
@@ -43,7 +44,21 @@ class WorkSessionController extends Controller
             'note' => 'nullable|string',
             'paused_ms' => 'nullable|integer|min:0',
             'paused_at' => 'nullable|date',
+            ...$this->segmentRules(),
         ]);
+
+        $start = Carbon::parse($data['start']);
+        $end = isset($data['end']) ? Carbon::parse($data['end']) : null;
+
+        if (array_key_exists('segments', $data)) {
+            $data = array_merge($data, $this->resolveSegmentState($data['segments'], $start, $end));
+        } elseif (($data['paused_ms'] ?? 0) === 0 && ($data['paused_at'] ?? null) === null) {
+            $data['segments'] = [[
+                'type' => 'work',
+                'start' => $start->toISOString(),
+                'end' => $end?->toISOString(),
+            ]];
+        }
 
         $session = $request->user()->workSessions()->create([
             'start' => $data['start'],
@@ -51,6 +66,7 @@ class WorkSessionController extends Controller
             'note' => $data['note'] ?? '',
             'paused_ms' => $data['paused_ms'] ?? 0,
             'paused_at' => $data['paused_at'] ?? null,
+            'segments' => $data['segments'] ?? null,
         ]);
 
         return new WorkSessionResource($session);
@@ -75,7 +91,21 @@ class WorkSessionController extends Controller
             'note' => 'nullable|string',
             'paused_ms' => 'sometimes|integer|min:0',
             'paused_at' => 'nullable|date',
+            ...$this->segmentRules(),
         ]);
+
+        $start = array_key_exists('start', $data) ? Carbon::parse($data['start']) : $session->start;
+        $end = array_key_exists('end', $data)
+            ? ($data['end'] === null ? null : Carbon::parse($data['end']))
+            : $session->end;
+
+        if ($end !== null && $end->lt($start)) {
+            throw ValidationException::withMessages(['end' => 'The end must be at or after the start.']);
+        }
+
+        if (array_key_exists('segments', $data)) {
+            $data = array_merge($data, $this->resolveSegmentState($data['segments'], $start, $end));
+        }
 
         $session->update($data);
 
@@ -105,22 +135,53 @@ class WorkSessionController extends Controller
     public function stats(Request $request)
     {
         $sessions = $request->user()->workSessions()->get();
+        $dayOffs = $request->user()->dayOffs()->get();
+        $excludedDayOffs = $dayOffs->where('type', 'excluded')->pluck('date')->map(fn ($d) => $d->format('Y-m-d'))->toArray();
+        $includedDayOffs = $dayOffs->where('type', 'included')->pluck('date')->map(fn ($d) => $d->format('Y-m-d'))->toArray();
+        $excludedSet = array_flip($excludedDayOffs);
+        $includedSet = array_flip($includedDayOffs);
+        $allDayOffsSet = array_merge($excludedSet, $includedSet);
         $now = now();
 
         $byDay = [];
         foreach ($sessions as $session) {
             $key = $session->start->format('Y-m-d');
+            // Skip sessions on EXCLUDED day-offs entirely
+            if (isset($excludedSet[$key])) {
+                continue;
+            }
+            // Include sessions on INCLUDED day-offs in totals
             $byDay[$key] = ($byDay[$key] ?? 0) + $this->sessionDurationMs($session, $now);
         }
 
         $streak = 0;
         $cursor = Carbon::today();
-        if (($byDay[$cursor->format('Y-m-d')] ?? 0) <= 0) {
-            $cursor->subDay();
+        // Skip ALL day-offs when checking streak (neither break nor count)
+        while (true) {
+            $cursorKey = $cursor->format('Y-m-d');
+            $hours = $byDay[$cursorKey] ?? 0;
+            if ($hours <= 0) {
+                // If it's any day-off, skip it but don't break streak
+                if (isset($allDayOffsSet[$cursorKey])) {
+                    $cursor->subDay();
+
+                    continue;
+                }
+                $cursor->subDay();
+                if (($byDay[$cursor->format('Y-m-d')] ?? 0) <= 0) {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
         while (($byDay[$cursor->format('Y-m-d')] ?? 0) > 0) {
             $streak++;
             $cursor->subDay();
+            // Skip all day-offs in streak calculation
+            while (isset($allDayOffsSet[$cursor->format('Y-m-d')])) {
+                $cursor->subDay();
+            }
         }
 
         $weekStart = Carbon::today()->startOfWeek(Carbon::MONDAY);
@@ -130,7 +191,12 @@ class WorkSessionController extends Controller
             if ($d->gt($now)) {
                 break;
             }
-            $weekMs += $byDay[$d->format('Y-m-d')] ?? 0;
+            $dKey = $d->format('Y-m-d');
+            // Skip EXCLUDED day-offs in week calculation; INCLUDED day-offs count hours
+            if (isset($excludedSet[$dKey])) {
+                continue;
+            }
+            $weekMs += $byDay[$dKey] ?? 0;
         }
 
         $best = 0;
@@ -159,12 +225,13 @@ class WorkSessionController extends Controller
     {
         $count = $request->integer('count', 4);
         $sessions = $request->user()->workSessions()->get();
+        $dayOffs = $request->user()->dayOffs()->get();
         $now = now();
         $results = [];
 
         for ($i = $count - 1; $i >= 0; $i--) {
             $d = Carbon::createFromDate($now->year, $now->month - $i, 1);
-            $results[] = $this->buildMonthStats($sessions, $d->year, $d->month, $now);
+            $results[] = $this->buildMonthStats($sessions, $dayOffs, $d->year, $d->month, $now);
         }
 
         return MonthStatsResource::collection($results);
@@ -175,6 +242,131 @@ class WorkSessionController extends Controller
         $request->user()->workSessions()->delete();
 
         return response()->json(['message' => 'All sessions cleared']);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function segmentRules(): array
+    {
+        return [
+            'segments' => 'sometimes|array',
+            'segments.*.type' => 'required|in:work,pause',
+            'segments.*.start' => 'required|date',
+            'segments.*.end' => 'nullable|date',
+        ];
+    }
+
+    /**
+     * Validate the structure of a submitted segment list, normalize it into the
+     * session bounds and derive the legacy pause counters from it, so that
+     * `end - start - paused` always equals the summed work segments.
+     *
+     * @param  array<int, array{type: string, start: string, end?: string|null}>  $segments
+     * @return array{segments: array<int, array{type: string, start: string, end: string|null}>, paused_ms: int, paused_at: Carbon|null}
+     *
+     * @throws ValidationException
+     */
+    private function resolveSegmentState(array $segments, Carbon $start, ?Carbon $end): array
+    {
+        $nowMs = now()->getTimestampMs();
+        $startMs = $start->getTimestampMs();
+        $endMs = $end?->getTimestampMs() ?? $nowMs;
+        $errors = [];
+        $parsed = [];
+
+        if ($segments === []) {
+            $errors[] = 'A session needs at least one segment.';
+        }
+
+        foreach (array_values($segments) as $index => $segment) {
+            $segmentStartMs = Carbon::parse($segment['start'])->getTimestampMs();
+            $segmentEndMs = isset($segment['end']) ? Carbon::parse($segment['end'])->getTimestampMs() : null;
+
+            if ($segmentEndMs !== null && $segmentEndMs <= $segmentStartMs) {
+                $errors[] = sprintf('Segment %d must end after it starts.', $index + 1);
+
+                continue;
+            }
+
+            $parsed[] = [$segmentStartMs, $segmentEndMs, $segment['type']];
+        }
+
+        usort($parsed, fn (array $a, array $b): int => [$a[0], $a[1] ?? PHP_INT_MAX] <=> [$b[0], $b[1] ?? PHP_INT_MAX]);
+
+        foreach ($parsed as $index => [$segmentStartMs, $segmentEndMs]) {
+            if ($segmentEndMs === null && ($end !== null || $index !== array_key_last($parsed))) {
+                $errors[] = $end !== null
+                    ? 'A session with an end time cannot have an open segment.'
+                    : 'Only the last segment can be left open.';
+            }
+
+            if ($index === 0) {
+                continue;
+            }
+
+            $previousEndMs = $parsed[$index - 1][1];
+            if ($previousEndMs !== null && $segmentStartMs < $previousEndMs) {
+                $errors[] = 'Segments must not overlap.';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages(['segments' => array_values(array_unique($errors))]);
+        }
+
+        $normalized = [];
+
+        foreach ($parsed as [$segmentStartMs, $segmentEndMs, $type]) {
+            if ($segmentEndMs === null) {
+                $normalized[] = [
+                    'type' => $type,
+                    'start' => Carbon::createFromTimestampMs(min(max($segmentStartMs, $startMs), $endMs))->toISOString(),
+                    'end' => null,
+                ];
+
+                continue;
+            }
+
+            $normalizedStartMs = max($segmentStartMs, $startMs);
+            $normalizedEndMs = min($segmentEndMs, $endMs);
+
+            if ($normalizedEndMs <= $normalizedStartMs) {
+                continue;
+            }
+
+            $normalized[] = [
+                'type' => $type,
+                'start' => Carbon::createFromTimestampMs($normalizedStartMs)->toISOString(),
+                'end' => Carbon::createFromTimestampMs($normalizedEndMs)->toISOString(),
+            ];
+        }
+
+        if ($normalized === []) {
+            throw ValidationException::withMessages(['segments' => 'Segments must fall within the session bounds.']);
+        }
+
+        $workMs = 0;
+        $openPauseStartMs = null;
+
+        foreach ($normalized as $segment) {
+            $segmentStartMs = Carbon::parse($segment['start'])->getTimestampMs();
+            $segmentEndMs = $segment['end'] === null ? null : Carbon::parse($segment['end'])->getTimestampMs();
+
+            if ($segment['type'] === 'work') {
+                $workMs += max(0, ($segmentEndMs ?? $nowMs) - $segmentStartMs);
+            } elseif ($segmentEndMs === null) {
+                $openPauseStartMs = $segmentStartMs;
+            }
+        }
+
+        $livePauseMs = $openPauseStartMs === null ? 0 : max(0, $nowMs - $openPauseStartMs);
+
+        return [
+            'segments' => $normalized,
+            'paused_ms' => max(0, ($endMs - $startMs) - $workMs - $livePauseMs),
+            'paused_at' => $openPauseStartMs === null ? null : Carbon::createFromTimestampMs($openPauseStartMs),
+        ];
     }
 
     private function sessionDurationMs(WorkSession $session, Carbon $now): int
@@ -189,27 +381,58 @@ class WorkSessionController extends Controller
         return max(0, $end - $start - $paused);
     }
 
-    private function buildMonthStats($sessions, int $year, int $month, Carbon $now): array
+    private function buildMonthStats($sessions, $dayOffs, int $year, int $month, Carbon $now): array
     {
-        $daysInMonth = Carbon::createFromDate($year, $month, 1)->daysInMonth;
+        // Separate excluded and included day-offs
+        $excludedDayOffs = [];
+        $includedDayOffs = [];
+        foreach ($dayOffs as $dayOff) {
+            $dateKey = $dayOff->date->format('Y-m-d');
+            if ($dayOff->type === 'included') {
+                $includedDayOffs[$dateKey] = true;
+            } else {
+                $excludedDayOffs[$dateKey] = true;
+            }
+        }
+        $allDayOffs = array_merge($excludedDayOffs, $includedDayOffs);
+
+        $workingDaysInMonth = $this->getWorkingDaysInMonth($year, $month, $excludedDayOffs);
         $doneHours = 0;
 
         foreach ($sessions as $session) {
             $d = $session->start;
+            $dateKey = $d->format('Y-m-d');
+
+            // Skip sessions on EXCLUDED day-offs entirely
+            if (isset($excludedDayOffs[$dateKey])) {
+                continue;
+            }
+            // Include sessions on INCLUDED day-offs in doneHours
+            // But INCLUDED day-offs don't reduce working days
+
             if ($d->year === $year && $d->month === $month) {
                 $doneHours += $this->sessionDurationMs($session, $now) / 3600000;
             }
         }
 
-        $targetHours = $daysInMonth * 8;
+        $targetHours = $workingDaysInMonth * 8;
         $today = $now;
         $isCurrent = $today->year === $year && $today->month === $month;
-        $dayOfMonth = $isCurrent ? $today->day : $daysInMonth;
-        $daysLeft = $isCurrent ? $daysInMonth - $today->day + 1 : 0;
+        $workingDaysElapsed = $isCurrent ? $this->getWorkingDaysElapsed($year, $month, $today, $excludedDayOffs) : $workingDaysInMonth;
+        $workingDaysLeft = $isCurrent ? $this->getWorkingDaysLeft($year, $month, $today, $excludedDayOffs) : 0;
 
         $remainingHours = max(0, $targetHours - $doneHours);
-        $perDayNeeded = $daysLeft > 0 ? $remainingHours / $daysLeft : 0;
-        $paceDeltaHours = $doneHours - $dayOfMonth * 8;
+        $perDayNeeded = $workingDaysLeft > 0 ? $remainingHours / $workingDaysLeft : 0;
+        $paceDeltaHours = $doneHours - $workingDaysElapsed * 8;
+
+        // Count total custom days off (both types)
+        $customDaysOffCount = 0;
+        foreach ($allDayOffs as $dateKey => $_) {
+            $d = Carbon::parse($dateKey);
+            if ($d->year === $year && $d->month === $month) {
+                $customDaysOffCount++;
+            }
+        }
 
         return [
             'key' => sprintf('%04d-%02d', $year, $month),
@@ -217,11 +440,57 @@ class WorkSessionController extends Controller
             'doneHours' => round($doneHours, 1),
             'targetHours' => $targetHours,
             'remainingHours' => round($remainingHours, 1),
-            'daysLeft' => $daysLeft,
+            'daysLeft' => $workingDaysLeft,
             'perDayNeeded' => round($perDayNeeded, 1),
             'paceDeltaHours' => round($paceDeltaHours, 1),
             'progress' => min(1, $targetHours > 0 ? $doneHours / $targetHours : 0),
             'isCurrent' => $isCurrent,
+            'customDaysOff' => $customDaysOffCount,
         ];
+    }
+
+    private function getWorkingDaysInMonth(int $year, int $month, array $excludedDayOffs = []): int
+    {
+        $start = Carbon::create($year, $month, 1);
+        $end = $start->copy()->endOfMonth();
+        $days = 0;
+        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+            if ($d->isWeekday() && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
+                $days++;
+            }
+        }
+
+        return $days;
+    }
+
+    private function getWorkingDaysElapsed(int $year, int $month, Carbon $today, array $excludedDayOffs = []): int
+    {
+        $start = Carbon::create($year, $month, 1);
+        $end = $today->copy()->min($start->copy()->endOfMonth());
+        $days = 0;
+        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+            if ($d->isWeekday() && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
+                $days++;
+            }
+        }
+
+        return $days;
+    }
+
+    private function getWorkingDaysLeft(int $year, int $month, Carbon $today, array $excludedDayOffs = []): int
+    {
+        $start = $today->copy()->max(Carbon::create($year, $month, 1))->addDay();
+        $end = Carbon::create($year, $month, 1)->endOfMonth();
+        if ($start->gt($end)) {
+            return 0;
+        }
+        $days = 0;
+        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+            if ($d->isWeekday() && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
+                $days++;
+            }
+        }
+
+        return $days;
     }
 }

@@ -1,4 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import type { Segment } from './tracker';
 
 const API_BASE_URL = import.meta.env['VITE_API_URL'] || '/api';
 
@@ -39,6 +40,8 @@ export interface ApiWorkSession {
   note: string;
   pausedMs: number;
   pausedAt: string | null;
+  segments: Segment[];
+  segmentsInferred: boolean;
   durationMs: number;
   durationHours: number;
   isActive: boolean;
@@ -68,6 +71,12 @@ export interface ApiMonthStats {
   isCurrent: boolean;
 }
 
+export interface ApiDayOff {
+  date: string;
+  type: 'excluded' | 'included';
+  created_at: string;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   links: {
@@ -92,13 +101,13 @@ export const sessionsApi = {
   list: (params?: { from?: string; to?: string; month?: string; per_page?: number }) =>
     api.get<PaginatedResponse<ApiWorkSession>>('/sessions', { params }),
 
-  create: (data: { start: string; end?: string; note?: string; paused_ms?: number; paused_at?: string }) =>
+  create: (data: { start: string; end?: string; note?: string; paused_ms?: number; paused_at?: string; segments?: Segment[] }) =>
     api.post<ApiWorkSession>('/sessions', data),
 
   get: (id: number) =>
     api.get<ApiWorkSession>(`/sessions/${id}`),
 
-  update: (id: number, data: Partial<{ start: string; end: string; note: string; paused_ms: number; paused_at: string | null }>) =>
+  update: (id: number, data: Partial<{ start: string; end: string; note: string; paused_ms: number; paused_at: string | null; segments: Segment[] }>) =>
     api.put<ApiWorkSession>(`/sessions/${id}`, data),
 
   delete: (id: number) =>
@@ -115,6 +124,18 @@ export const sessionsApi = {
 
   clearAll: () =>
     api.delete('/sessions/clear-all'),
+};
+
+// Day-offs API
+export const dayOffsApi = {
+  list: () =>
+    api.get<ApiDayOff[]>('/day-offs'),
+
+  create: (date: string, type: 'excluded' | 'included' = 'excluded') =>
+    api.post<ApiDayOff>('/day-offs', { date, type }),
+
+  delete: (date: string) =>
+    api.delete(`/day-offs/${date}`),
 };
 
 // Auth API

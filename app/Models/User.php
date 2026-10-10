@@ -30,4 +30,9 @@ class User extends Authenticatable
     {
         return $this->hasMany(WorkSession::class)->orderBy('start', 'desc');
     }
+
+    public function dayOffs(): HasMany
+    {
+        return $this->hasMany(UserDayOff::class);
+    }
 }
