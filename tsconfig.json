@@ -4,9 +4,6 @@
     "resources/js/**/*.tsx",
     "vite.config.ts"
   ],
-  "exclude": [
-    "resources/js/test/**"
-  ],
   "compilerOptions": {
     "target": "ES2022",
     "jsx": "react-jsx",
