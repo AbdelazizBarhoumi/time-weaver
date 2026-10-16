@@ -1,6 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { Briefcase, Play, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { SegmentBreakdown } from "@/components/SegmentBreakdown";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   addDays,
   eventInterval,
@@ -8,11 +18,16 @@ import {
   isWorkDay,
   layoutColumns,
   sameDay,
+  sessionBands,
   startOfDay,
+  trackedMsOf,
   type CalendarEvent,
+  type CalendarSession,
   type CalendarSettings,
   type DaySummary,
+  type DeleteScope,
   type FocusBlock,
+  type SessionBand,
   type SuggestedSlot,
 } from "@/lib/calendar";
 import { formatHM, formatTime } from "@/lib/tracker";
@@ -29,16 +44,20 @@ interface Props {
   settings: CalendarSettings;
   events: CalendarEvent[];
   focusBlocks: FocusBlock[];
+  /** Tracked work sessions to draw onto the grid, live ones included. */
+  sessions: CalendarSession[];
   todaySlots: SuggestedSlot[];
   density: CalendarDensity;
   /** Per-day totals, same length as the number of visible days. */
   summaries?: DaySummary[];
   onToggleWork: (e: CalendarEvent) => void;
   onResetWork: (e: CalendarEvent) => void;
+  onDeleteEvent: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
   onCreateFocus: (start: Date, end: Date) => void;
   onDeleteFocus: (b: FocusBlock) => void;
   onStartFocus: (b: FocusBlock) => void;
   onLogWork?: (start: Date, end: Date) => void;
+  onDeleteSession: (s: CalendarSession) => void;
 }
 
 function timeZoneLabel(): string {
@@ -85,8 +104,8 @@ export function CalendarView(props: Props) {
   }, [firstDay, dayCount, density]);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-line bg-panel">
-      <div ref={scrollRef} className="max-h-[70vh] overflow-y-auto">
+    <div className="flex flex-col overflow-hidden rounded-lg border border-line bg-panel lg:min-h-0 lg:flex-1">
+      <div ref={scrollRef} className="max-h-[70vh] overflow-y-auto lg:max-h-none lg:min-h-0 lg:flex-1">
         {/* Sticky day headers */}
         <div
           className="sticky top-0 z-20 grid border-b border-line bg-panel/95 backdrop-blur"
@@ -96,7 +115,7 @@ export function CalendarView(props: Props) {
             {tz.split("/").pop()}
           </div>
           {Array.from({ length: dayCount }, (_, i) => addDays(firstDay, i)).map((d) => (
-            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} />
+            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} onDeleteEvent={props.onDeleteEvent} />
           ))}
         </div>
 
@@ -165,16 +184,64 @@ export function CalendarView(props: Props) {
   );
 }
 
+/**
+ * Trash control for a cached event. The menu separates a normal delete (which a
+ * later sync can undo) from a permanent one (which it cannot), and — for a
+ * recurring event — offers the same choice for the whole series.
+ */
+function DeleteEventButton({
+  event,
+  onDelete,
+  className,
+  iconClassName = "h-3 w-3",
+}: {
+  event: CalendarEvent;
+  onDelete: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
+  className?: string;
+  iconClassName?: string;
+}) {
+  const series = event.recurringEventId !== null;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={className}
+          title={series ? "Delete this event or the whole series" : "Delete this event"}
+          onClick={(ev) => ev.stopPropagation()}
+          onPointerDown={(ev) => ev.stopPropagation()}
+        >
+          <Trash2 className={iconClassName} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuItem onSelect={() => onDelete(event, "this", false)}>Delete this event</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onDelete(event, "this", true)}>Delete this event permanently</DropdownMenuItem>
+        {series && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => onDelete(event, "series", false)}>Delete all in series</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onDelete(event, "series", true)}>Delete all in series permanently</DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function DayHeader({
   day,
   now,
   settings,
   events,
+  onDeleteEvent,
 }: {
   day: Date;
   now: number;
   settings: CalendarSettings;
   events: CalendarEvent[];
+  onDeleteEvent: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
 }) {
   const isToday = sameDay(day, new Date(now));
   const working = isWorkDay(day, settings);
@@ -191,11 +258,16 @@ function DayHeader({
       {dayAllDay.slice(0, 3).map((e) => (
         <div
           key={e.id}
-          className="mt-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink"
+          className="group relative mt-1 flex items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink"
           style={{ background: `${e.accountColor}33`, borderLeft: `3px solid ${e.accountColor}` }}
           title={`${e.title} · ${e.accountEmail}`}
         >
-          {e.title}
+          <span className="truncate">{e.title}</span>
+          <DeleteEventButton
+            event={e}
+            onDelete={onDeleteEvent}
+            className="ml-auto shrink-0 rounded p-0.5 text-mut/60 hover:text-destructive"
+          />
         </div>
       ))}
       {dayAllDay.length > 3 && <div className="mt-1 font-mono text-[10px] text-mut">+{dayAllDay.length - 3} more</div>}
@@ -299,6 +371,26 @@ function DayColumn(
         />
       )}
 
+      {/* Tracked sessions — drawn behind events so nothing is hidden */}
+      {sessionBands(props.sessions, day, now).map((band, index) => {
+        const top = Math.max(0, msToPx(day, band.start));
+        const bottom = Math.min(heightPx, msToPx(day, band.end));
+        if (bottom <= 0 || top >= heightPx) return null;
+        return (
+          <SessionBlock
+            key={`s-${band.session.id}-${index}`}
+            band={band}
+            style={{
+              top,
+              height: Math.max(10, bottom - top),
+              left: "2px",
+              width: "calc(100% - 4px)",
+            }}
+            onDelete={() => props.onDeleteSession(band.session)}
+          />
+        );
+      })}
+
       {/* Free-slot suggestions (today) */}
       {isToday &&
         props.todaySlots.map((s) => {
@@ -393,10 +485,17 @@ function DayColumn(
         const e = item.event;
         if (!e) return null;
         return (
-          <button
+          <div
             key={e.id}
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={() => props.onToggleWork(e)}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter" || ev.key === " ") {
+                ev.preventDefault();
+                props.onToggleWork(e);
+              }
+            }}
             onContextMenu={(ev) => {
               ev.preventDefault();
               props.onResetWork(e);
@@ -405,7 +504,7 @@ function DayColumn(
               e.isWork ? "not work" : "mark as work"
             } · Right-click: back to automatic`}
             className={cn(
-              "absolute overflow-hidden rounded px-1.5 py-1 text-left text-[11px] text-ink transition hover:brightness-125",
+              "group absolute cursor-pointer overflow-hidden rounded px-1.5 py-1 text-left text-[11px] text-ink transition hover:brightness-125",
               e.isWork ? "ring-1 ring-neon" : "opacity-90",
             )}
             style={{
@@ -421,8 +520,14 @@ function DayColumn(
             <div className="font-mono text-[10px] text-mut">
               {formatTime(e.start)}–{formatTime(e.end)}
               {e.workSource === "rule" && " · auto"}
+              {e.workSource === "account" && " · mailbox"}
             </div>
-          </button>
+            <DeleteEventButton
+              event={e}
+              onDelete={props.onDeleteEvent}
+              className="absolute right-0.5 top-0.5 rounded bg-panel/80 p-0.5 text-mut/60 hover:text-destructive"
+            />
+          </div>
         );
       })}
 
@@ -450,5 +555,91 @@ function DayColumn(
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * A tracked session drawn behind the day's events. A session with pauses is
+ * drawn as several pieces — one per work segment — and every piece opens the
+ * same popover: note, times, tracked time, a pause breakdown and a delete action.
+ */
+function SessionBlock({
+  band,
+  style,
+  onDelete,
+}: {
+  band: SessionBand;
+  style: CSSProperties;
+  onDelete: () => void;
+}) {
+  const now = Date.now();
+  const session = band.session;
+  const running = session.end === null;
+  const sessionEnd = session.end ? new Date(session.end).getTime() : now;
+  const trackedMs = trackedMsOf(session, now);
+  const pausedMs = Math.max(0, sessionEnd - new Date(session.start).getTime() - trackedMs);
+  const last = session.segments[session.segments.length - 1];
+  const paused = running && last?.type === "pause" && last.end === null;
+  const stateLabel = paused ? "paused" : running ? "working" : "tracked";
+  const sessionLabel = `${formatTime(session.start)}–${session.end ? formatTime(session.end) : "now"}`;
+  const pieceLabel = `${formatTime(new Date(band.start).toISOString())}–${formatTime(
+    new Date(band.end).toISOString(),
+  )}`;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          style={style}
+          title={`${session.note || "Tracked session"} · ${pieceLabel} · ${formatHM(trackedMs)} tracked${
+            pausedMs > 0 ? ` · ${formatHM(pausedMs)} paused` : ""
+          }`}
+          className={cn(
+            "absolute overflow-hidden rounded-sm border-l-2 border-neon/70 bg-neon/10 px-1.5 py-0.5 text-left text-[10px] text-neon transition hover:bg-neon/20",
+            running && !paused && "ring-1 ring-neon/40",
+          )}
+        >
+          <span className="flex items-center gap-1 font-mono uppercase tracking-wider">
+            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-neon", running && !paused && "animate-pulse")} />
+            {stateLabel}
+          </span>
+          {band.end - band.start >= 45 * 60_000 && (
+            <span className="mt-0.5 block truncate text-ink/80">{session.note || formatHM(trackedMs)}</span>
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="max-h-[75vh] w-64 overflow-y-auto border-line bg-panel text-ink">
+        <div className="font-mono text-[10px] uppercase tracking-widest text-mut">
+          {paused ? "Session paused" : running ? "In session" : "Tracked session"}
+        </div>
+        <div className="mt-1 text-sm font-medium">{session.note || "Untitled session"}</div>
+        <div className="mt-1 font-mono text-[11px] text-mut">
+          {sessionLabel} · {formatHM(trackedMs)} tracked
+          {pausedMs > 0 && ` · ${formatHM(pausedMs)} paused`}
+          {session.source === "calendar" && " · from calendar"}
+        </div>
+        <div className="mt-2">
+          <SegmentBreakdown
+            session={{
+              id: String(session.id),
+              start: session.start,
+              end: session.end,
+              note: session.note,
+              source: session.source,
+              pausedMs,
+              pausedAt: null,
+              segments: session.segments,
+              segmentsInferred: session.segmentsInferred,
+            }}
+            now={now}
+          />
+        </div>
+        <Button variant="outline" size="sm" className="mt-3 w-full" onClick={onDelete}>
+          <Trash2 className="mr-1 h-4 w-4" /> Delete session
+        </Button>
+      </PopoverContent>
+    </Popover>
   );
 }

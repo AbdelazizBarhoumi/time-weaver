@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\CalendarAccount;
+use App\Services\CalendarSyncService;
 use App\Services\GoogleCalendarService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -14,19 +15,46 @@ class CalendarAccountController extends Controller
 {
     private const COLORS = ['#5b9cff', '#ff9f43', '#c56cf0', '#ff6b81', '#1dd1a1', '#feca57'];
 
-    public function __construct(private GoogleCalendarService $google) {}
+    public function __construct(
+        private GoogleCalendarService $google,
+        private CalendarSyncService $sync,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
-        $accounts = $request->user()->calendarAccounts()->get()
+        $accounts = $request->user()->calendarAccounts()->withCount('dismissals')->get()
             ->map(fn (CalendarAccount $account) => [
                 'id' => $account->id,
                 'provider' => $account->provider,
                 'email' => $account->email,
                 'color' => $account->color,
+                'defaultWork' => $account->default_work,
+                'lastSyncedAt' => $account->last_synced_at?->toISOString(),
+                'disconnected' => $account->disconnected_at !== null,
+                // Events deleted for good, which a sync will not bring back.
+                'hiddenCount' => $account->dismissals_count,
             ]);
 
         return response()->json($accounts);
+    }
+
+    /**
+     * Toggle the per-mailbox default: count every timed event as work unless the
+     * user has manually tagged it otherwise.
+     */
+    public function update(Request $request, int $accountId): JsonResponse
+    {
+        $data = $request->validate([
+            'default_work' => 'required|boolean',
+        ]);
+
+        $account = $request->user()->calendarAccounts()->whereKey($accountId)->firstOrFail();
+        $account->update(['default_work' => $data['default_work']]);
+
+        return response()->json([
+            'id' => $account->id,
+            'defaultWork' => $account->default_work,
+        ]);
     }
 
     public function redirect(Request $request): JsonResponse
@@ -63,6 +91,8 @@ class CalendarAccountController extends Controller
         $attributes = [
             'access_token' => $tokens['access_token'],
             'expires_at' => now()->addSeconds($tokens['expires_in']),
+            // Reconnecting the same mailbox revives a previously disconnected account.
+            'disconnected_at' => null,
         ];
         if ($tokens['refresh_token']) {
             $attributes['refresh_token'] = $tokens['refresh_token'];
@@ -81,10 +111,42 @@ class CalendarAccountController extends Controller
         return redirect('/calendar?connected=1');
     }
 
+    /**
+     * Soft-disconnect an account: stop syncing it but keep its cached events
+     * and work tags so past days stay meaningful.
+     */
     public function destroy(Request $request, int $accountId): JsonResponse
     {
-        $request->user()->calendarAccounts()->whereKey($accountId)->firstOrFail()->delete();
+        $account = $request->user()->calendarAccounts()->whereKey($accountId)->firstOrFail();
+
+        $account->update([
+            'disconnected_at' => now(),
+            'access_token' => '',
+            'refresh_token' => null,
+            'expires_at' => null,
+        ]);
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Permanently remove a disconnected account's cached events and work tags.
+     */
+    public function purgeEvents(Request $request, int $accountId): JsonResponse
+    {
+        $account = $request->user()->calendarAccounts()->whereKey($accountId)->firstOrFail();
+
+        return response()->json(['removed' => $this->sync->purge($account)]);
+    }
+
+    /**
+     * Forget the events deleted for good on this account, so the next sync can
+     * find them again.
+     */
+    public function restoreEvents(Request $request, int $accountId): JsonResponse
+    {
+        $account = $request->user()->calendarAccounts()->whereKey($accountId)->firstOrFail();
+
+        return response()->json(['restored' => $this->sync->restore($account)]);
     }
 }

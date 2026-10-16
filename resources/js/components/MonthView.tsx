@@ -5,9 +5,11 @@ import {
   isWorkDay,
   monthGrid,
   sameDay,
+  sessionBands,
   startOfMonth,
   summarizeDay,
   type CalendarEvent,
+  type CalendarSession,
   type CalendarSettings,
   type FocusBlock,
   type Interval,
@@ -21,12 +23,14 @@ interface Props {
   events: CalendarEvent[];
   focusBlocks: FocusBlock[];
   trackedIntervals: Interval[];
+  /** Tracked sessions, shown as compact chips under the day's events. */
+  sessions?: CalendarSession[];
   onSelectDay: (d: Date) => void;
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-export function MonthView({ month, now, settings, events, focusBlocks, trackedIntervals, onSelectDay }: Props) {
+export function MonthView({ month, now, settings, events, focusBlocks, trackedIntervals, sessions = [], onSelectDay }: Props) {
   const cells = useMemo(() => monthGrid(month), [month]);
   const monthIndex = month.getMonth();
   const today = new Date(now);
@@ -68,6 +72,19 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
             goalHours: DAILY_GOAL_HOURS,
           });
 
+          const bands = sessionBands(sessions, day, now);
+          // A session split by pauses shows one chip holding its tracked total for the day.
+          const chips = Array.from(
+            bands.reduce((map, band) => {
+              const found = map.get(band.session.id);
+              if (found) found.ms += band.end - band.start;
+              else map.set(band.session.id, { session: band.session, ms: band.end - band.start });
+              return map;
+            }, new Map<number, { session: CalendarSession; ms: number }>()),
+            ([, chip]) => chip,
+          );
+          const eventLimit = chips.length > 0 ? 2 : 3;
+
           return (
             <button
               type="button"
@@ -99,7 +116,19 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
               )}
 
               <div className="flex flex-col gap-0.5 overflow-hidden">
-                {dayEvents.slice(0, 3).map((e) => (
+                {chips.slice(0, 2).map((chip) => (
+                  <span
+                    key={`s-${chip.session.id}`}
+                    className="flex items-center gap-1 truncate rounded bg-neon/10 px-1 py-0.5 text-[10px] text-neon"
+                  >
+                    <span
+                      className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-neon", chip.session.end === null && "animate-pulse")}
+                    />
+                    <span className="font-mono">{formatHM(chip.ms)}</span>
+                    <span className="truncate text-ink/80">{chip.session.note || "Tracked"}</span>
+                  </span>
+                ))}
+                {dayEvents.slice(0, eventLimit).map((e) => (
                   <span
                     key={e.id}
                     className={cn("truncate rounded px-1 py-0.5 text-[10px]", e.isWork ? "text-neon" : "text-ink")}
@@ -109,8 +138,8 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
                     {e.title}
                   </span>
                 ))}
-                {dayEvents.length > 3 && (
-                  <span className="px-1 font-mono text-[10px] text-mut">+{dayEvents.length - 3} more</span>
+                {dayEvents.length > eventLimit && (
+                  <span className="px-1 font-mono text-[10px] text-mut">+{dayEvents.length - eventLimit} more</span>
                 )}
               </div>
             </button>

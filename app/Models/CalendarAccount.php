@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['user_id', 'provider', 'email', 'color', 'access_token', 'refresh_token', 'expires_at'])]
+#[Fillable(['user_id', 'provider', 'email', 'color', 'default_work', 'access_token', 'refresh_token', 'expires_at', 'last_synced_at', 'disconnected_at'])]
 #[Hidden(['access_token', 'refresh_token'])]
 class CalendarAccount extends Model
 {
@@ -20,8 +20,16 @@ class CalendarAccount extends Model
         return [
             'access_token' => 'encrypted',
             'refresh_token' => 'encrypted',
+            'default_work' => 'boolean',
             'expires_at' => 'datetime',
+            'last_synced_at' => 'datetime',
+            'disconnected_at' => 'datetime',
         ];
+    }
+
+    public function isConnected(): bool
+    {
+        return $this->disconnected_at === null;
     }
 
     public function user(): BelongsTo
@@ -32,5 +40,13 @@ class CalendarAccount extends Model
     public function tags(): HasMany
     {
         return $this->hasMany(CalendarEventTag::class);
+    }
+
+    /**
+     * Events the user deleted for good, which a sync must never re-create.
+     */
+    public function dismissals(): HasMany
+    {
+        return $this->hasMany(CalendarEventDismissal::class);
     }
 }

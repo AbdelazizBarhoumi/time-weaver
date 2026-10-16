@@ -1,17 +1,56 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
-import { DAILY_GOAL_HOURS } from "./tracker";
+import { DAILY_GOAL_HOURS, type Segment } from "./tracker";
 
 export interface CalendarAccount {
   id: number;
   provider: "google";
   email: string;
   color: string;
+  /** Count every timed event from this mailbox as work unless tagged otherwise. */
+  defaultWork: boolean;
+  /** ISO timestamp of the last successful manual sync for this account. */
+  lastSyncedAt?: string | null;
+  /** True when the account was disconnected; its cached events are kept. */
+  disconnected?: boolean;
+  /** Events deleted for good from this mailbox, which a sync will not restore. */
+  hiddenCount?: number;
+}
+
+export interface SyncAccountResult {
+  accountId: number;
+  email: string;
+  synced: number;
+  removed: number;
+  lastSyncedAt: string | null;
+  failed: boolean;
+}
+
+export interface SyncResult {
+  synced: number;
+  accounts: SyncAccountResult[];
+  errors: { accountId: number; email: string; message: string }[];
+  syncedAt: string;
+}
+
+/** How much of a recurring event to delete from the local cache. */
+export type DeleteScope = "this" | "series";
+
+/** What to delete, and whether the deletion should survive later syncs. */
+export interface DeleteEventInput {
+  cacheId: number;
+  scope: DeleteScope;
+  /** When true the event is remembered as dismissed and never re-synced. */
+  permanent: boolean;
 }
 
 export interface CalendarEvent {
   id: string;
+  /** Primary key of the cached row, used to delete a single event. */
+  cacheId: number;
   eventId: string;
+  /** Google series id shared by every occurrence of a recurring event (null for one-offs). */
+  recurringEventId: string | null;
   accountId: number;
   accountEmail: string;
   accountColor: string;
@@ -23,7 +62,33 @@ export interface CalendarEvent {
   end: string;
   allDay: boolean;
   isWork: boolean;
-  workSource: "manual" | "rule" | null;
+  workSource: "manual" | "rule" | "account" | null;
+  /** ISO timestamp of the last sync that stored this event. */
+  syncedAt?: string | null;
+}
+
+/** A tracked work session, rendered onto the calendar grid. */
+export interface CalendarSession {
+  id: number;
+  start: string;
+  /** null while the session is still running. */
+  end: string | null;
+  note: string;
+  source: "manual" | "calendar";
+  /** Work/pause pieces tiling the session; only work pieces count as tracked time. */
+  segments: Segment[];
+  /** True when the server synthesized the breakdown for a record made before segments existed. */
+  segmentsInferred: boolean;
+}
+
+/**
+ * One drawn piece of a session: a work segment clipped to one day. A session
+ * recorded before the breakdown existed yields a single piece covering it all.
+ */
+export interface SessionBand {
+  session: CalendarSession;
+  start: number;
+  end: number;
 }
 
 export interface CalendarSettings {
@@ -69,6 +134,19 @@ export const calendarApi = {
   accounts: () => api.get<CalendarAccount[]>("/calendar/accounts").then((r) => r.data),
   connectUrl: () => api.post<{ url: string }>("/calendar/accounts/connect").then((r) => r.data.url),
   disconnect: (id: number) => api.delete(`/calendar/accounts/${id}`),
+  purgeAccountEvents: (id: number) => api.delete<{ removed: number }>(`/calendar/accounts/${id}/events`).then((r) => r.data),
+  restoreAccountEvents: (id: number) => api.delete<{ restored: number }>(`/calendar/accounts/${id}/dismissals`).then((r) => r.data),
+  updateAccount: (id: number, defaultWork: boolean) =>
+    api
+      .patch<{ id: number; defaultWork: boolean }>(`/calendar/accounts/${id}`, { default_work: defaultWork })
+      .then((r) => r.data),
+  deleteEvent: (input: DeleteEventInput) =>
+    api
+      .delete<{ removed: number }>(`/calendar/events/${input.cacheId}`, {
+        params: { scope: input.scope, permanent: input.permanent ? 1 : 0 },
+      })
+      .then((r) => r.data),
+  sync: () => api.post<SyncResult>("/calendar/sync").then((r) => r.data),
   events: (from: string, to: string) =>
     api
       .get<{ events: CalendarEvent[]; errors: { accountId: number; email: string; message: string }[] }>(
@@ -115,7 +193,7 @@ export function useCalendarEvents(from: Date, to: Date) {
   return useQuery({
     queryKey: ["calendar", "events", f, t],
     queryFn: () => calendarApi.events(f, t),
-    refetchInterval: 5 * 60_000,
+    // Events come from the local cache; only a manual sync updates them.
   });
 }
 
@@ -129,7 +207,7 @@ export function useFocusBlocks(from: Date, to: Date) {
   return useQuery({ queryKey: ["calendar", "focus", f, t], queryFn: () => calendarApi.focusBlocks(f, t) });
 }
 
-function useCalendarMutation<T>(fn: (arg: T) => Promise<unknown>) {
+function useCalendarMutation<TArg, TResult>(fn: (arg: TArg) => Promise<TResult>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fn,
@@ -142,6 +220,13 @@ function useCalendarMutation<T>(fn: (arg: T) => Promise<unknown>) {
 }
 
 export const useDisconnectAccount = () => useCalendarMutation((id: number) => calendarApi.disconnect(id));
+export const usePurgeAccountEvents = () => useCalendarMutation((id: number) => calendarApi.purgeAccountEvents(id));
+export const useRestoreAccountEvents = () => useCalendarMutation((id: number) => calendarApi.restoreAccountEvents(id));
+export const useUpdateCalendarAccount = () =>
+  useCalendarMutation((args: { id: number; defaultWork: boolean }) => calendarApi.updateAccount(args.id, args.defaultWork));
+export const useDeleteCalendarEvent = () =>
+  useCalendarMutation((input: DeleteEventInput) => calendarApi.deleteEvent(input));
+export const useSyncCalendars = () => useCalendarMutation(() => calendarApi.sync());
 export const useTagEvent = () => useCalendarMutation((input: TagEventInput) => calendarApi.tag(input));
 export const useSaveCalendarSettings = () => useCalendarMutation((s: CalendarSettings) => calendarApi.saveSettings(s));
 export const useCreateFocusBlock = () =>
@@ -188,6 +273,16 @@ export function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+/** "just now", "12m ago", "3h ago", "2d ago". */
+export function relativeTime(iso: string, now: number = Date.now()): string {
+  const minutes = Math.round((now - new Date(iso).getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 /** Whether a date is one of the user's configured working days. */
 export function isWorkDay(day: Date, settings: CalendarSettings): boolean {
   const days = settings.workDays?.length ? settings.workDays : DEFAULT_WORK_DAYS;
@@ -222,6 +317,53 @@ export function eventInterval(e: { start: string; end: string }): Interval {
 export function dayInterval(day: Date): Interval {
   const start = startOfDay(day).getTime();
   return { start, end: start + MS_PER_DAY };
+}
+
+/**
+ * The work-only intervals of a session. A running session (`end === null`) is
+ * treated as ending at `now`, so it grows as the clock ticks.
+ *
+ * Sessions recorded before the segment breakdown existed fall back to the whole
+ * `start − end` span.
+ */
+export function sessionWorkIntervals(session: CalendarSession, now: number): Interval[] {
+  const end = session.end ? new Date(session.end).getTime() : now;
+  const toInterval = (seg: Segment): Interval => ({
+    start: new Date(seg.start).getTime(),
+    end: seg.end ? new Date(seg.end).getTime() : now,
+  });
+
+  let pieces = session.segments.filter((seg) => seg.type === "work").map(toInterval);
+  if (pieces.length === 0) pieces = [{ start: new Date(session.start).getTime(), end }];
+
+  return pieces.filter((piece) => piece.end > piece.start);
+}
+
+/** Tracked hours this session actually contributes (pauses excluded). */
+export function trackedMsOf(session: CalendarSession, now: number): number {
+  return sessionWorkIntervals(session, now).reduce((sum, piece) => sum + (piece.end - piece.start), 0);
+}
+
+/**
+ * Tracked session pieces intersected with one day: one band per work segment,
+ * so pauses stay visible as gaps instead of counting as work. A session
+ * recorded before the breakdown existed yields one band covering it all.
+ */
+export function sessionBands(sessions: CalendarSession[], day: Date, now: number): SessionBand[] {
+  const dayIv = dayInterval(day);
+  const out: SessionBand[] = [];
+
+  for (const session of sessions) {
+    const sessionEnd = session.end ? new Date(session.end).getTime() : now;
+    if (sessionEnd <= dayIv.start || new Date(session.start).getTime() >= dayIv.end) continue;
+
+    for (const piece of sessionWorkIntervals(session, now)) {
+      const clipped = clip(piece, dayIv);
+      if (clipped) out.push({ session, start: clipped.start, end: clipped.end });
+    }
+  }
+
+  return out.sort((a, b) => a.start - b.start);
 }
 
 export function mergeIntervals(list: Interval[]): Interval[] {

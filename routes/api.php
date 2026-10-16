@@ -35,10 +35,15 @@ Route::middleware('auth:web')->group(function () {
     Route::get('calendar/accounts', [CalendarAccountController::class, 'index']);
     Route::post('calendar/accounts/connect', [CalendarAccountController::class, 'redirect']);
     Route::get('calendar/google/callback', [CalendarAccountController::class, 'callback']);
+    Route::patch('calendar/accounts/{account}', [CalendarAccountController::class, 'update']);
     Route::delete('calendar/accounts/{account}', [CalendarAccountController::class, 'destroy']);
+    Route::delete('calendar/accounts/{account}/events', [CalendarAccountController::class, 'purgeEvents']);
+    Route::delete('calendar/accounts/{account}/dismissals', [CalendarAccountController::class, 'restoreEvents']);
 
     // Calendar: events and manual work tags
     Route::get('calendar/events', [CalendarEventController::class, 'index']);
+    Route::post('calendar/sync', [CalendarEventController::class, 'sync']);
+    Route::delete('calendar/events/{event}', [CalendarEventController::class, 'destroy']);
     Route::post('calendar/events/tag', [CalendarEventController::class, 'tag']);
 
     // Calendar: work-hours settings

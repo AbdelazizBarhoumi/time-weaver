@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, Plus, X } from "lucide-react";
+import { Briefcase, Eye, EyeOff, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   connectGoogleAccount,
+  relativeTime,
   useDisconnectAccount,
   useSaveCalendarSettings,
   WEEKDAY_LABELS,
@@ -51,39 +52,120 @@ export function BudgetCard({ budget }: { budget: DayBudget }) {
 export function AccountsCard({
   accounts,
   hidden,
+  syncing,
   onToggleVisibility,
+  onToggleDefaultWork,
+  onSync,
+  onPurge,
+  onRestoreHidden,
 }: {
   accounts: CalendarAccount[];
   hidden: Set<number>;
+  syncing: boolean;
   onToggleVisibility: (id: number) => void;
+  onToggleDefaultWork: (id: number, defaultWork: boolean) => void;
+  onSync: () => void;
+  onPurge: (id: number) => void;
+  onRestoreHidden: (id: number) => void;
 }) {
   const disconnect = useDisconnectAccount();
+  const hasConnected = accounts.some((a) => !a.disconnected);
+
   return (
     <div className="rounded-lg border border-line bg-panel p-4">
-      <div className="font-mono text-[11px] uppercase tracking-widest text-mut">Calendars</div>
-      <ul className="mt-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-mono text-[11px] uppercase tracking-widest text-mut">Calendars</div>
+        {accounts.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2"
+            disabled={syncing || !hasConnected}
+            onClick={onSync}
+            title="Fetch the latest events from Google"
+          >
+            <RefreshCw className={cn("mr-1 h-3.5 w-3.5", syncing && "animate-spin")} />
+            <span className="font-mono text-[10px] uppercase tracking-wider">{syncing ? "syncing" : "sync"}</span>
+          </Button>
+        )}
+      </div>
+      <ul className="mt-3 space-y-3">
         {accounts.length === 0 && <li className="text-xs text-mut">No Google account connected yet.</li>}
         {accounts.map((a) => (
-          <li key={a.id} className="group flex items-center gap-2 text-sm text-ink">
+          <li key={a.id} className="group flex items-start gap-2 text-sm text-ink">
             <button
               type="button"
               onClick={() => onToggleVisibility(a.id)}
-              title={hidden.has(a.id) ? "Show this calendar" : "Hide this calendar"}
-              className="text-mut hover:text-ink"
+              disabled={a.disconnected}
+              title={a.disconnected ? "Disconnected" : hidden.has(a.id) ? "Show this calendar" : "Hide this calendar"}
+              className="mt-0.5 text-mut hover:text-ink disabled:opacity-40"
             >
               {hidden.has(a.id) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
-            <span className={cn("h-2.5 w-2.5 rounded-full", hidden.has(a.id) && "opacity-30")} style={{ background: a.color }} />
-            <span className={cn("flex-1 truncate", hidden.has(a.id) && "text-mut line-through")}>{a.email}</span>
+            <span
+              className={cn("mt-1 h-2.5 w-2.5 shrink-0 rounded-full", (hidden.has(a.id) || a.disconnected) && "opacity-30")}
+              style={{ background: a.color }}
+            />
+            <span className="flex-1 overflow-hidden">
+              <span className={cn("block truncate", (hidden.has(a.id) || a.disconnected) && "text-mut")}>{a.email}</span>
+              <span className="block font-mono text-[10px] text-mut">
+                {a.disconnected
+                  ? "disconnected · saved events kept"
+                  : a.lastSyncedAt
+                    ? `synced ${relativeTime(a.lastSyncedAt)}`
+                    : "never synced"}
+              </span>
+              {(a.hiddenCount ?? 0) > 0 && (
+                <span className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-mut">
+                  {a.hiddenCount} deleted for good
+                  <button
+                    type="button"
+                    className="underline decoration-dotted hover:text-neon"
+                    title="Let the next sync load these events again"
+                    onClick={() => onRestoreHidden(a.id)}
+                  >
+                    restore
+                  </button>
+                </span>
+              )}
+            </span>
             <button
-              className="hidden text-mut hover:text-destructive group-hover:block"
-              title="Disconnect"
-              onClick={() => {
-                if (confirm(`Disconnect ${a.email}?`)) disconnect.mutate(a.id);
-              }}
+              type="button"
+              disabled={a.disconnected}
+              title={
+                a.defaultWork
+                  ? "Every event from this mailbox counts as work by default — click to stop"
+                  : "Count every event from this mailbox as work by default"
+              }
+              onClick={() => onToggleDefaultWork(a.id, !a.defaultWork)}
+              className={cn(
+                "mt-0.5 shrink-0 disabled:opacity-30",
+                a.defaultWork ? "text-neon" : "text-mut hover:text-ink",
+              )}
             >
-              <X className="h-4 w-4" />
+              <Briefcase className="h-4 w-4" />
             </button>
+            {a.disconnected ? (
+              <button
+                className="mt-0.5 text-mut hover:text-destructive"
+                title="Remove saved events"
+                onClick={() => {
+                  if (confirm(`Remove all saved events for ${a.email}?`)) onPurge(a.id);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            ) : (
+              <button
+                className="mt-0.5 hidden text-mut hover:text-destructive group-hover:block"
+                title="Disconnect"
+                onClick={() => {
+                  if (confirm(`Disconnect ${a.email}? Its saved events stay on the calendar.`)) disconnect.mutate(a.id);
+                }}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </li>
         ))}
       </ul>
@@ -97,6 +179,7 @@ export function AccountsCard({
 export function Legend() {
   const items: { label: string; className: string }[] = [
     { label: "Work event", className: "bg-l2 ring-1 ring-neon" },
+    { label: "Tracked session", className: "bg-neon/10 border-l-2 border-neon/70" },
     { label: "Planned block", className: "bg-l1 border border-neon" },
     { label: "Free gap for work", className: "border border-dashed border-neon/60" },
     { label: "Non-work / day off", className: "bg-line" },

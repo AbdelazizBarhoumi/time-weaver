@@ -6,15 +6,21 @@ import {
   isWorkDay,
   mergeIntervals,
   monthGrid,
+  relativeTime,
   sameDay,
+  sessionBands,
+  sessionWorkIntervals,
   startOfWeek,
   subtractIntervals,
   summarizeDay,
+  trackedMsOf,
   workWindow,
   type CalendarEvent,
+  type CalendarSession,
   type CalendarSettings,
   type Interval,
 } from "@/lib/calendar";
+import type { Segment } from "@/lib/tracker";
 
 const settings: CalendarSettings = {
   workStart: "09:00",
@@ -35,7 +41,9 @@ function at(day: Date, hour: number, minute = 0): string {
 function makeEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
   return {
     id: overrides.id ?? overrides.eventId ?? "event-1",
+    cacheId: overrides.cacheId ?? 1,
     eventId: overrides.eventId ?? "event-1",
+    recurringEventId: overrides.recurringEventId ?? null,
     accountId: 1,
     accountEmail: "me@example.com",
     accountColor: "#5b9cff",
@@ -219,5 +227,115 @@ describe("monthGrid", () => {
     expect(cells.length % 7).toBe(0);
     expect(sameDay(cells[0]!, startOfWeek(new Date(2026, 9, 1)))).toBe(true);
     expect(cells.some((c) => c.getMonth() === 9 && c.getDate() === 31)).toBe(true);
+  });
+});
+
+function session(overrides: Partial<CalendarSession> = {}): CalendarSession {
+  const start = overrides.start ?? at(wednesday, 9);
+  const end = overrides.end === undefined ? at(wednesday, 10) : overrides.end;
+
+  return {
+    id: 1,
+    note: "Tracked",
+    source: "manual",
+    segmentsInferred: false,
+    ...overrides,
+    start,
+    end,
+    segments: overrides.segments ?? [{ type: "work", start, end }],
+  };
+}
+
+/** 09–11 work, 11–12 pause, 12–13 work. */
+function pausedSession(): CalendarSession {
+  const segments: Segment[] = [
+    { type: "work", start: at(wednesday, 9), end: at(wednesday, 11) },
+    { type: "pause", start: at(wednesday, 11), end: at(wednesday, 12) },
+    { type: "work", start: at(wednesday, 12), end: at(wednesday, 13) },
+  ];
+
+  return session({ end: at(wednesday, 13), segments });
+}
+
+describe("sessionBands", () => {
+  it("clips a session to one day", () => {
+    const start = new Date(at(wednesday, 15)).getTime();
+    const end = new Date(at(wednesday, 17)).getTime();
+    const band = { id: 1, start: at(wednesday, 15), end: at(wednesday, 17), note: "Deep work", source: "manual" as const };
+
+    const bands = sessionBands([session({ ...band })], wednesday, new Date(at(wednesday, 18)).getTime());
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.start).toBe(start);
+    expect(bands[0]!.end).toBe(end);
+  });
+
+  it("extends a running session up to now", () => {
+    const now = new Date(at(wednesday, 15, 30)).getTime();
+    const bands = sessionBands([session({ id: 2, start: at(wednesday, 14), end: null })], wednesday, now);
+
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.start).toBe(new Date(at(wednesday, 14)).getTime());
+    expect(bands[0]!.end).toBe(now);
+  });
+
+  it("ignores sessions that fall on other days", () => {
+    const bands = sessionBands([session({ id: 3, start: at(saturday, 9), end: at(saturday, 10) })], wednesday, Date.now());
+    expect(bands).toHaveLength(0);
+  });
+
+  it("splits a paused session into one band per work segment", () => {
+    const bands = sessionBands([pausedSession()], wednesday, new Date(at(wednesday, 18)).getTime());
+
+    expect(bands).toHaveLength(2);
+    expect(bands[0]!.start).toBe(new Date(at(wednesday, 9)).getTime());
+    expect(bands[0]!.end).toBe(new Date(at(wednesday, 11)).getTime());
+    expect(bands[1]!.start).toBe(new Date(at(wednesday, 12)).getTime());
+    expect(bands[1]!.end).toBe(new Date(at(wednesday, 13)).getTime());
+  });
+
+  it("still draws a session that has no breakdown", () => {
+    const bands = sessionBands([session({ segments: [] })], wednesday, new Date(at(wednesday, 18)).getTime());
+
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.start).toBe(new Date(at(wednesday, 9)).getTime());
+    expect(bands[0]!.end).toBe(new Date(at(wednesday, 10)).getTime());
+  });
+});
+
+describe("sessionWorkIntervals", () => {
+  it("returns only the work segments, excluding pauses", () => {
+    const intervals = sessionWorkIntervals(pausedSession(), new Date(at(wednesday, 18)).getTime());
+
+    expect(intervals).toHaveLength(2);
+    expect(intervals[0]).toEqual({ start: new Date(at(wednesday, 9)).getTime(), end: new Date(at(wednesday, 11)).getTime() });
+    expect(intervals[1]).toEqual({ start: new Date(at(wednesday, 12)).getTime(), end: new Date(at(wednesday, 13)).getTime() });
+  });
+
+  it("grows an open work segment up to now", () => {
+    const now = new Date(at(wednesday, 15, 30)).getTime();
+    const running = session({ end: null, segments: [{ type: "work", start: at(wednesday, 14), end: null }] });
+
+    expect(sessionWorkIntervals(running, now)).toEqual([{ start: new Date(at(wednesday, 14)).getTime(), end: now }]);
+  });
+});
+
+describe("trackedMsOf", () => {
+  it("sums work segments, ignoring paused time", () => {
+    expect(trackedMsOf(pausedSession(), new Date(at(wednesday, 18)).getTime())).toBe(3 * 3_600_000);
+  });
+
+  it("falls back to start–end when no breakdown exists", () => {
+    expect(trackedMsOf(session({ segments: [] }), Date.now())).toBe(3_600_000);
+  });
+});
+
+describe("relativeTime", () => {
+  const now = new Date(2026, 9, 14, 12, 0, 0).getTime();
+
+  it("formats recent, minute, hour and day distances", () => {
+    expect(relativeTime(new Date(now - 20_000).toISOString(), now)).toBe("just now");
+    expect(relativeTime(new Date(now - 12 * 60_000).toISOString(), now)).toBe("12m ago");
+    expect(relativeTime(new Date(now - 3 * 3_600_000).toISOString(), now)).toBe("3h ago");
+    expect(relativeTime(new Date(now - 2 * 86_400_000).toISOString(), now)).toBe("2d ago");
   });
 });
