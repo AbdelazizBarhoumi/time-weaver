@@ -15,7 +15,6 @@ export default defineConfig({
         }),
         viteReact({
             include: "**/*.tsx",
-            fastRefresh: true,
         }),
         laravel({
             input: "resources/js/start.tsx",
