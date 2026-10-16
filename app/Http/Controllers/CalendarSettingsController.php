@@ -17,10 +17,14 @@ class CalendarSettingsController extends Controller
     {
         $data = $request->validate([
             'work_start' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
-            'work_end' => ['required', 'regex:/^(([01]\d|2[0-3]):[0-5]\d|24:00)$/', 'gt:work_start'],
+            'work_end' => ['required', 'regex:/^(([01]\d|2[0-3]):[0-5]\d|24:00)$/'],
             'work_keywords' => 'array|max:50',
             'work_keywords.*' => 'string|max:60',
         ]);
+
+        if (strcmp($data['work_end'], $data['work_start']) <= 0) {
+            return response()->json(['message' => 'End time must be after start time.'], 422);
+        }
 
         $settings = CalendarSetting::forUser($request->user());
         $settings->update([
