@@ -17,6 +17,7 @@ import {
     validateSegments,
     insertSplitSegment,
     DAILY_GOAL_HOURS,
+    computeStats,
 } from "@/lib/tracker";
 import type { Segment, WorkSession } from "@/lib/tracker";
 
@@ -435,6 +436,53 @@ describe("lib/tracker utilities", () => {
             ];
             insertSplitSegment(segments, "pause", ms("2026-10-07T17:00:00.000Z"));
             expect(segments).toHaveLength(1);
+        });
+    });
+
+    describe("computeStats backlogHours", () => {
+        const session = (id: string, start: Date, end: Date): WorkSession => ({
+            id,
+            start: start.toISOString(),
+            end: end.toISOString(),
+            note: "",
+            pausedMs: 0,
+            pausedAt: null,
+            segments: [{ type: "work", start: start.toISOString(), end: end.toISOString() }],
+            segmentsInferred: false,
+        });
+
+        it("sums daily shortfalls from the first session through today", () => {
+            const now = new Date(2026, 9, 7, 17, 0, 0); // Wed Oct 7 2026
+            const sessions = [
+                session("1", new Date(2026, 9, 5, 9, 0, 0), new Date(2026, 9, 5, 17, 0, 0)), // Mon 8h
+                session("2", new Date(2026, 9, 6, 9, 0, 0), new Date(2026, 9, 6, 15, 0, 0)), // Tue 6h
+                session("3", new Date(2026, 9, 7, 9, 0, 0), new Date(2026, 9, 7, 17, 0, 0)), // Wed 8h
+            ];
+            expect(computeStats(sessions, now.getTime()).backlogHours).toBe(2);
+        });
+
+        it("counts missing weekdays but skips weekends", () => {
+            const now = new Date(2026, 9, 7, 17, 0, 0); // Wed
+            const sessions = [
+                session("1", new Date(2026, 9, 5, 9, 0, 0), new Date(2026, 9, 5, 17, 0, 0)), // Mon 8h
+            ];
+            // Tue (missing) 8h + Wed (today, missing) 8h
+            expect(computeStats(sessions, now.getTime()).backlogHours).toBe(16);
+        });
+
+        it("reduces the backlog with overtime", () => {
+            const now = new Date(2026, 9, 7, 17, 0, 0); // Wed
+            const sessions = [
+                session("1", new Date(2026, 9, 5, 9, 0, 0), new Date(2026, 9, 5, 18, 0, 0)), // Mon 9h
+                session("2", new Date(2026, 9, 6, 9, 0, 0), new Date(2026, 9, 6, 13, 0, 0)), // Tue 4h
+                session("3", new Date(2026, 9, 7, 9, 0, 0), new Date(2026, 9, 7, 17, 0, 0)), // Wed 8h
+            ];
+            // 3 working days × 8h = 24h target, 21h worked
+            expect(computeStats(sessions, now.getTime()).backlogHours).toBe(3);
+        });
+
+        it("is zero without sessions", () => {
+            expect(computeStats([], Date.now()).backlogHours).toBe(0);
         });
     });
 });

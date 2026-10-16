@@ -56,6 +56,7 @@ export interface ApiStats {
   bestDayHours: number;
   avgPerActiveDay: number;
   totalHours: number;
+  backlogHours: number;
 }
 
 export interface ApiMonthStats {

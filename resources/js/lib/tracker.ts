@@ -274,6 +274,8 @@ export interface Stats {
   bestDayHours: number;
   avgPerActiveDay: number;
   totalHours: number;
+  /** Elapsed working days × DAILY_GOAL_HOURS − all hours worked, floored at 0 */
+  backlogHours: number;
 }
 
 export function computeStats(sessions: WorkSession[], now: number = Date.now()): Stats {
@@ -310,12 +312,26 @@ export function computeStats(sessions: WorkSession[], now: number = Date.now()):
     if (ms > 0) activeDays++;
     if (ms > best) best = ms;
   }
+  // Backlog against the 8h/day goal: elapsed working days (Mon–Fri) from the first
+  // session through today, minus all hours worked. Overtime and work on off-days
+  // reduce it (the client has no day-off data), and it never goes below zero.
+  let backlogMs = 0;
+  if (sessions.length > 0) {
+    const first = new Date(Math.min(...sessions.map(s => new Date(s.start).getTime())));
+    first.setHours(0, 0, 0, 0);
+    let workingDays = 0;
+    for (let d = new Date(first); d.getTime() <= now; d.setDate(d.getDate() + 1)) {
+      if (d.getDay() !== 0 && d.getDay() !== 6) workingDays++;
+    }
+    backlogMs = Math.max(0, workingDays * DAILY_GOAL_HOURS * 3600_000 - total);
+  }
   return {
     streak,
     weekHours: weekMs / 3600_000,
     bestDayHours: best / 3600_000,
     avgPerActiveDay: activeDays ? total / 3600_000 / activeDays : 0,
     totalHours: total / 3600_000,
+    backlogHours: backlogMs / 3600_000,
   };
 }
 

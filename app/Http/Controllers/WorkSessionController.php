@@ -212,12 +212,43 @@ class WorkSessionController extends Controller
             }
         }
 
+        // Cumulative shortfall against the 8-hour daily goal across every elapsed
+        // working day (Mon–Fri, excluding EXCLUDED day-offs) from the first session
+        // through today. Hours worked on any day — including overtime and work on
+        // off-days — reduce the backlog, which never goes below zero.
+        $backlogMs = 0;
+        if ($sessions->isNotEmpty()) {
+            $workedMs = 0;
+            $firstDay = null;
+            foreach ($sessions as $session) {
+                $workedMs += $this->sessionDurationMs($session, $now);
+                $day = $session->start->copy()->startOfDay();
+                if ($firstDay === null || $day->lt($firstDay)) {
+                    $firstDay = $day;
+                }
+            }
+
+            $workingDays = 0;
+            $cursor = $firstDay;
+            $todayKey = $now->format('Y-m-d');
+            while ($cursor->format('Y-m-d') <= $todayKey) {
+                $cursorKey = $cursor->format('Y-m-d');
+                if ($cursor->isWeekday() && ! isset($excludedSet[$cursorKey])) {
+                    $workingDays++;
+                }
+                $cursor->addDay();
+            }
+
+            $backlogMs = max(0, $workingDays * 8 * 3600000 - $workedMs);
+        }
+
         return new StatsResource([
             'streak' => $streak,
             'weekHours' => round($weekMs / 3600000, 1),
             'bestDayHours' => round($best / 3600000, 1),
             'avgPerActiveDay' => $activeDays ? round($total / 3600000 / $activeDays, 1) : 0,
             'totalHours' => round($total / 3600000, 1),
+            'backlogHours' => round($backlogMs / 3600000, 1),
         ]);
     }
 

@@ -179,11 +179,17 @@ function Index() {
   const workSessions = sessionsTyped.map(apiToWorkSession);
   const todayHours = hoursForDay(workSessions, dayKey(new Date(now)), now);
 
-  const statCards = [
+  const backlog = stats?.backlogHours ?? 0;
+  const backlogT = Math.min(1, Math.max(0, backlog / DAILY_GOAL_HOURS));
+  const backlogColor = `hsl(${Math.round(120 * (1 - backlogT))} 85% 55%)`;
+
+  type StatCard = { label: string; value: string; unit: string; neon?: boolean; color?: string };
+  const statCards: StatCard[] = [
     { label: "STREAK", value: String(stats?.streak ?? 0), unit: stats?.streak === 1 ? "day" : "days", neon: true },
     { label: "THIS WEEK", value: stats?.weekHours.toFixed(1) ?? "0.0", unit: "h", neon: false },
     { label: "BEST DAY", value: stats?.bestDayHours.toFixed(1) ?? "0.0", unit: "h", neon: false },
     { label: "AVG / DAY", value: stats?.avgPerActiveDay.toFixed(1) ?? "0.0", unit: "h", neon: false },
+    { label: "BACKLOG", value: backlog.toFixed(1), unit: "h", color: backlogColor },
   ];
 
   if (isLoading) {
@@ -252,7 +258,7 @@ function Index() {
           />
           <MonthlyCard sessions={workSessions} now={now} customDayOffs={customDayOffs} />
 
-          <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-5">
             {statCards.map((c, i) => (
               <div
                 key={c.label}
@@ -260,7 +266,10 @@ function Index() {
                 style={{ animationDelay: `${220 + i * 40}ms` }}
               >
                 <div className="font-mono text-[10px] tracking-[0.2em] text-mut">{c.label}</div>
-                <div className={`mt-2 text-3xl font-bold ${c.neon ? "text-neon" : "text-ink"}`}>
+                <div
+                  className={`mt-2 text-3xl font-bold ${c.color ? "" : c.neon ? "text-neon" : "text-ink"}`}
+                  style={c.color ? { color: c.color } : undefined}
+                >
                   {c.value}
                   <span className="text-sm text-mut"> {c.unit}</span>
                 </div>
