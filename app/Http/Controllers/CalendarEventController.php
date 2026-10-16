@@ -5,9 +5,12 @@ namespace App\Http\Controllers;
 use App\Models\CalendarAccount;
 use App\Models\CalendarEventTag;
 use App\Models\CalendarSetting;
+use App\Models\User;
 use App\Services\GoogleCalendarService;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -68,6 +71,10 @@ class CalendarEventController extends Controller
 
     /**
      * Mark an event as work / not work, or clear the override (is_work = null).
+     *
+     * Marking a timed event as work also records a tracked session for its time,
+     * so calendar work shows up in the streak/backlog/monthly stats. Clearing the
+     * tag removes that session again.
      */
     public function tag(Request $request): JsonResponse
     {
@@ -75,21 +82,91 @@ class CalendarEventController extends Controller
             'account_id' => 'required|integer',
             'event_id' => 'required|string|max:1024',
             'is_work' => 'present|nullable|boolean',
+            'title' => 'nullable|string|max:512',
+            'start' => 'nullable|date',
+            'end' => 'nullable|date',
+            'all_day' => 'nullable|boolean',
         ]);
 
         $user = $request->user();
         $account = $user->calendarAccounts()->whereKey($data['account_id'])->firstOrFail();
 
-        if ($data['is_work'] === null) {
-            CalendarEventTag::where('calendar_account_id', $account->id)->where('event_id', $data['event_id'])->delete();
-        } else {
+        $linkedSession = $user->workSessions()
+            ->where('source', 'calendar')
+            ->where('calendar_account_id', $account->id)
+            ->where('calendar_event_id', $data['event_id']);
+
+        if ($data['is_work'] === true) {
             CalendarEventTag::updateOrCreate(
                 ['calendar_account_id' => $account->id, 'event_id' => $data['event_id']],
-                ['user_id' => $user->id, 'is_work' => $data['is_work']],
+                ['user_id' => $user->id, 'is_work' => true],
             );
+
+            $this->recordCalendarSession($user, $account, $data, $linkedSession);
+        } elseif ($data['is_work'] === false) {
+            $linkedSession->delete();
+            CalendarEventTag::updateOrCreate(
+                ['calendar_account_id' => $account->id, 'event_id' => $data['event_id']],
+                ['user_id' => $user->id, 'is_work' => false],
+            );
+        } else {
+            $linkedSession->delete();
+            CalendarEventTag::where('calendar_account_id', $account->id)
+                ->where('event_id', $data['event_id'])
+                ->delete();
         }
 
         return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Create or refresh the tracked session mirroring a work event.
+     *
+     * All-day events have no clock time, so they only get the tag.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function recordCalendarSession(
+        User $user,
+        CalendarAccount $account,
+        array $data,
+        HasMany $linkedSession,
+    ): void {
+        if (($data['all_day'] ?? false) || empty($data['start']) || empty($data['end'])) {
+            return;
+        }
+
+        $start = Carbon::parse($data['start']);
+        $end = Carbon::parse($data['end']);
+
+        if ($end->lessThanOrEqualTo($start)) {
+            return;
+        }
+
+        $attributes = [
+            'start' => $start,
+            'end' => $end,
+            'note' => $data['title'] ?? 'Calendar event',
+            'source' => 'calendar',
+            'paused_ms' => 0,
+            'paused_at' => null,
+            'segments' => [[
+                'type' => 'work',
+                'start' => $start->toISOString(),
+                'end' => $end->toISOString(),
+            ]],
+        ];
+
+        $session = $linkedSession->first();
+
+        if ($session) {
+            $session->update($attributes);
+        } else {
+            $user->workSessions()->create($attributes + [
+                'calendar_account_id' => $account->id,
+                'calendar_event_id' => $data['event_id'],
+            ]);
+        }
     }
 
     /**

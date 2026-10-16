@@ -40,7 +40,14 @@ export function SessionsPanel({ sessions, now, onDelete, onEdit }: Props) {
                     {formatTime(s.start)} – {s.end ? formatTime(s.end) : "now"}
                     {running && s.pausedAt && <span className="ml-2 text-[10px] text-mut">(paused)</span>}
                   </div>
-                  <div className="mt-1 font-mono text-[10px] text-mut">{s.note || (running ? "active" : "—")}</div>
+                  <div className="mt-1 font-mono text-[10px] text-mut">
+                    {s.source === "calendar" && (
+                      <span className="mr-1 rounded bg-neon/10 px-1 py-0.5 text-[9px] uppercase tracking-wider text-neon" title="Auto-created from a calendar work event">
+                        calendar
+                      </span>
+                    )}
+                    {s.note || (running ? "active" : "—")}
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="font-mono text-sm text-neon">{formatHM(ms)}</div>

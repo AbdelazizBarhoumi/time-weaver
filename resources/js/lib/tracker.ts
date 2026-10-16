@@ -13,6 +13,8 @@ export interface WorkSession {
   /** ISO timestamp of session end, null while running */
   end: string | null;
   note: string;
+  /** Where the session came from: a manual timer/entry, or a calendar work event */
+  source?: "manual" | "calendar";
   /** Accumulated paused milliseconds (excluded from duration) */
   pausedMs: number;
   /** ISO timestamp when paused, null while running */

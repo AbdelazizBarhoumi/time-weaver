@@ -5,6 +5,7 @@ import { ManualEntryDialog } from "@/components/ManualEntryDialog";
 import { MonthlyCard } from "@/components/MonthlyCard";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TimerCard } from "@/components/TimerCard";
+import { TodayPlanCard } from "@/components/TodayPlanCard";
 import { FloatingTimerWidget } from "@/components/FloatingTimerWidget";
 import { EditSessionDialog } from "@/components/EditSessionDialog";
 import {
@@ -38,6 +39,7 @@ function apiToWorkSession(s: ApiWorkSession): WorkSession {
     start: s.start,
     end: s.end,
     note: s.note,
+    source: s.source ?? "manual",
     pausedMs: s.pausedMs,
     pausedAt: s.pausedAt,
     segments: s.segments,
@@ -252,6 +254,7 @@ function Index() {
             onAddManual={() => { setManualDate(undefined); setManualOpen(true); }}
           />
           <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} onEdit={handleEditSession} />
+          <TodayPlanCard />
           <Heatmap
             sessions={workSessions}
             now={now}

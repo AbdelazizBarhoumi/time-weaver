@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Resources\MonthStatsResource;
 use App\Http\Resources\StatsResource;
 use App\Http\Resources\WorkSessionResource;
+use App\Models\CalendarSetting;
 use App\Models\WorkSession;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -136,6 +137,7 @@ class WorkSessionController extends Controller
     {
         $sessions = $request->user()->workSessions()->get();
         $dayOffs = $request->user()->dayOffs()->get();
+        $workDays = CalendarSetting::forUser($request->user())->workDays();
         $excludedDayOffs = $dayOffs->where('type', 'excluded')->pluck('date')->map(fn ($d) => $d->format('Y-m-d'))->toArray();
         $includedDayOffs = $dayOffs->where('type', 'included')->pluck('date')->map(fn ($d) => $d->format('Y-m-d'))->toArray();
         $excludedSet = array_flip($excludedDayOffs);
@@ -213,9 +215,9 @@ class WorkSessionController extends Controller
         }
 
         // Cumulative shortfall against the 8-hour daily goal across every elapsed
-        // working day (Mon–Fri, excluding EXCLUDED day-offs) from the first session
-        // through today. Hours worked on any day — including overtime and work on
-        // off-days — reduce the backlog, which never goes below zero.
+        // working day (the user's configured weekdays, excluding EXCLUDED day-offs)
+        // from the first session through today. Hours worked on any day — including
+        // overtime and work on off-days — reduce the backlog, which never goes below zero.
         $backlogMs = 0;
         if ($sessions->isNotEmpty()) {
             $workedMs = 0;
@@ -233,7 +235,7 @@ class WorkSessionController extends Controller
             $todayKey = $now->format('Y-m-d');
             while ($cursor->format('Y-m-d') <= $todayKey) {
                 $cursorKey = $cursor->format('Y-m-d');
-                if ($cursor->isWeekday() && ! isset($excludedSet[$cursorKey])) {
+                if (in_array($cursor->dayOfWeek, $workDays, true) && ! isset($excludedSet[$cursorKey])) {
                     $workingDays++;
                 }
                 $cursor->addDay();
@@ -257,12 +259,13 @@ class WorkSessionController extends Controller
         $count = $request->integer('count', 4);
         $sessions = $request->user()->workSessions()->get();
         $dayOffs = $request->user()->dayOffs()->get();
+        $workDays = CalendarSetting::forUser($request->user())->workDays();
         $now = now();
         $results = [];
 
         for ($i = $count - 1; $i >= 0; $i--) {
             $d = Carbon::createFromDate($now->year, $now->month - $i, 1);
-            $results[] = $this->buildMonthStats($sessions, $dayOffs, $d->year, $d->month, $now);
+            $results[] = $this->buildMonthStats($sessions, $dayOffs, $d->year, $d->month, $now, $workDays);
         }
 
         return MonthStatsResource::collection($results);
@@ -412,7 +415,7 @@ class WorkSessionController extends Controller
         return max(0, $end - $start - $paused);
     }
 
-    private function buildMonthStats($sessions, $dayOffs, int $year, int $month, Carbon $now): array
+    private function buildMonthStats($sessions, $dayOffs, int $year, int $month, Carbon $now, array $workDays): array
     {
         // Separate excluded and included day-offs
         $excludedDayOffs = [];
@@ -427,7 +430,7 @@ class WorkSessionController extends Controller
         }
         $allDayOffs = array_merge($excludedDayOffs, $includedDayOffs);
 
-        $workingDaysInMonth = $this->getWorkingDaysInMonth($year, $month, $excludedDayOffs);
+        $workingDaysInMonth = $this->getWorkingDaysInMonth($year, $month, $excludedDayOffs, $workDays);
         $doneHours = 0;
 
         foreach ($sessions as $session) {
@@ -449,8 +452,8 @@ class WorkSessionController extends Controller
         $targetHours = $workingDaysInMonth * 8;
         $today = $now;
         $isCurrent = $today->year === $year && $today->month === $month;
-        $workingDaysElapsed = $isCurrent ? $this->getWorkingDaysElapsed($year, $month, $today, $excludedDayOffs) : $workingDaysInMonth;
-        $workingDaysLeft = $isCurrent ? $this->getWorkingDaysLeft($year, $month, $today, $excludedDayOffs) : 0;
+        $workingDaysElapsed = $isCurrent ? $this->getWorkingDaysElapsed($year, $month, $today, $excludedDayOffs, $workDays) : $workingDaysInMonth;
+        $workingDaysLeft = $isCurrent ? $this->getWorkingDaysLeft($year, $month, $today, $excludedDayOffs, $workDays) : 0;
 
         $remainingHours = max(0, $targetHours - $doneHours);
         $perDayNeeded = $workingDaysLeft > 0 ? $remainingHours / $workingDaysLeft : 0;
@@ -480,13 +483,13 @@ class WorkSessionController extends Controller
         ];
     }
 
-    private function getWorkingDaysInMonth(int $year, int $month, array $excludedDayOffs = []): int
+    private function getWorkingDaysInMonth(int $year, int $month, array $excludedDayOffs = [], array $workDays = CalendarSetting::DEFAULT_WORK_DAYS): int
     {
         $start = Carbon::create($year, $month, 1);
         $end = $start->copy()->endOfMonth();
         $days = 0;
         for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
-            if ($d->isWeekday() && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
+            if ($this->isWorkingDay($d, $workDays) && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
                 $days++;
             }
         }
@@ -494,13 +497,13 @@ class WorkSessionController extends Controller
         return $days;
     }
 
-    private function getWorkingDaysElapsed(int $year, int $month, Carbon $today, array $excludedDayOffs = []): int
+    private function getWorkingDaysElapsed(int $year, int $month, Carbon $today, array $excludedDayOffs = [], array $workDays = CalendarSetting::DEFAULT_WORK_DAYS): int
     {
         $start = Carbon::create($year, $month, 1);
         $end = $today->copy()->min($start->copy()->endOfMonth());
         $days = 0;
         for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
-            if ($d->isWeekday() && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
+            if ($this->isWorkingDay($d, $workDays) && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
                 $days++;
             }
         }
@@ -508,7 +511,7 @@ class WorkSessionController extends Controller
         return $days;
     }
 
-    private function getWorkingDaysLeft(int $year, int $month, Carbon $today, array $excludedDayOffs = []): int
+    private function getWorkingDaysLeft(int $year, int $month, Carbon $today, array $excludedDayOffs = [], array $workDays = CalendarSetting::DEFAULT_WORK_DAYS): int
     {
         $start = $today->copy()->max(Carbon::create($year, $month, 1))->addDay();
         $end = Carbon::create($year, $month, 1)->endOfMonth();
@@ -517,11 +520,19 @@ class WorkSessionController extends Controller
         }
         $days = 0;
         for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
-            if ($d->isWeekday() && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
+            if ($this->isWorkingDay($d, $workDays) && ! isset($excludedDayOffs[$d->format('Y-m-d')])) {
                 $days++;
             }
         }
 
         return $days;
+    }
+
+    /**
+     * @param  array<int, int>  $workDays
+     */
+    private function isWorkingDay(Carbon $date, array $workDays): bool
+    {
+        return in_array($date->dayOfWeek, $workDays, true);
     }
 }

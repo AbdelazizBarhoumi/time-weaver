@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
+import { DAILY_GOAL_HOURS } from "./tracker";
 
 export interface CalendarAccount {
   id: number;
@@ -29,6 +30,8 @@ export interface CalendarSettings {
   workStart: string;
   workEnd: string;
   workKeywords: string[];
+  /** Working days of the week, 0 = Sunday … 6 = Saturday */
+  workDays: number[];
 }
 
 export interface FocusBlock {
@@ -43,7 +46,24 @@ export interface Interval {
   end: number;
 }
 
+/** Sunday = 0 … Saturday = 6 */
+export const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5];
+
+export const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+const MS_PER_DAY = 86_400_000;
+
 /* ------------------------------------------------------------------ API */
+
+export interface TagEventInput {
+  accountId: number;
+  eventId: string;
+  isWork: boolean | null;
+  title?: string;
+  start?: string;
+  end?: string;
+  allDay?: boolean;
+}
 
 export const calendarApi = {
   accounts: () => api.get<CalendarAccount[]>("/calendar/accounts").then((r) => r.data),
@@ -56,8 +76,16 @@ export const calendarApi = {
         { params: { from, to } },
       )
       .then((r) => r.data),
-  tag: (accountId: number, eventId: string, isWork: boolean | null) =>
-    api.post("/calendar/events/tag", { account_id: accountId, event_id: eventId, is_work: isWork }),
+  tag: (payload: TagEventInput) =>
+    api.post("/calendar/events/tag", {
+      account_id: payload.accountId,
+      event_id: payload.eventId,
+      is_work: payload.isWork,
+      title: payload.title,
+      start: payload.start,
+      end: payload.end,
+      all_day: payload.allDay,
+    }),
   settings: () => api.get<CalendarSettings>("/calendar/settings").then((r) => r.data),
   saveSettings: (s: CalendarSettings) =>
     api
@@ -65,6 +93,7 @@ export const calendarApi = {
         work_start: s.workStart,
         work_end: s.workEnd,
         work_keywords: s.workKeywords,
+        work_days: s.workDays,
       })
       .then((r) => r.data),
   focusBlocks: (from: string, to: string) =>
@@ -104,15 +133,16 @@ function useCalendarMutation<T>(fn: (arg: T) => Promise<unknown>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fn,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["calendar"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["calendar"] });
+      // Tagging work events creates/removes tracked sessions, so refresh those too.
+      qc.invalidateQueries({ queryKey: ["sessions"] });
+    },
   });
 }
 
 export const useDisconnectAccount = () => useCalendarMutation((id: number) => calendarApi.disconnect(id));
-export const useTagEvent = () =>
-  useCalendarMutation((a: { accountId: number; eventId: string; isWork: boolean | null }) =>
-    calendarApi.tag(a.accountId, a.eventId, a.isWork),
-  );
+export const useTagEvent = () => useCalendarMutation((input: TagEventInput) => calendarApi.tag(input));
 export const useSaveCalendarSettings = () => useCalendarMutation((s: CalendarSettings) => calendarApi.saveSettings(s));
 export const useCreateFocusBlock = () =>
   useCalendarMutation((b: { title?: string; start: string; end: string }) => calendarApi.createFocusBlock(b));
@@ -125,7 +155,7 @@ export async function connectGoogleAccount() {
 
 /* ---------------------------------------------------------------- Logic */
 
-/** "06:30" → 390 */
+/** "06:30" → 390, "24:00" → 1440 */
 export function hhmmToMinutes(v: string): number {
   const [h, m] = v.split(":").map(Number);
   return (h ?? 0) * 60 + (m ?? 0);
@@ -150,11 +180,33 @@ export function startOfWeek(d: Date): Date {
   return x;
 }
 
+export function startOfMonth(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
 export function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-/** Work window of a given day as absolute ms. */
+/** Whether a date is one of the user's configured working days. */
+export function isWorkDay(day: Date, settings: CalendarSettings): boolean {
+  const days = settings.workDays?.length ? settings.workDays : DEFAULT_WORK_DAYS;
+  return days.includes(day.getDay());
+}
+
+/** Monday-start grid of whole weeks covering the month of `d`. */
+export function monthGrid(d: Date): Date[] {
+  const first = startOfWeek(startOfMonth(d));
+  const cells: Date[] = [];
+  for (let cursor = first; cells.length < 42; cursor = addDays(cursor, 1)) {
+    cells.push(cursor);
+    if (cells.length % 7 === 0 && cursor.getMonth() !== d.getMonth() && cursor > new Date(d.getFullYear(), d.getMonth() + 1, 0)) {
+      break;
+    }
+  }
+  return cells;
+}
+
 export function workWindow(day: Date, settings: CalendarSettings): Interval {
   const base = startOfDay(day).getTime();
   return {
@@ -167,13 +219,11 @@ export function eventInterval(e: { start: string; end: string }): Interval {
   return { start: new Date(e.start).getTime(), end: new Date(e.end).getTime() };
 }
 
-export function clip(i: Interval, w: Interval): Interval | null {
-  const s = Math.max(i.start, w.start);
-  const e = Math.min(i.end, w.end);
-  return e > s ? { start: s, end: e } : null;
+export function dayInterval(day: Date): Interval {
+  const start = startOfDay(day).getTime();
+  return { start, end: start + MS_PER_DAY };
 }
 
-/** Sort + merge overlapping intervals. */
 export function mergeIntervals(list: Interval[]): Interval[] {
   const sorted = [...list].sort((a, b) => a.start - b.start);
   const out: Interval[] = [];
@@ -183,6 +233,16 @@ export function mergeIntervals(list: Interval[]): Interval[] {
     else out.push({ ...i });
   }
   return out;
+}
+
+export function clip(iv: Interval, window: Interval): Interval | null {
+  const start = Math.max(iv.start, window.start);
+  const end = Math.min(iv.end, window.end);
+  return end > start ? { start, end } : null;
+}
+
+export function clipAll(list: Interval[], window: Interval): Interval[] {
+  return list.map((i) => clip(i, window)).filter((x): x is Interval => !!x);
 }
 
 export function totalMs(list: Interval[]): number {
@@ -202,78 +262,119 @@ export function freeIntervals(window: Interval, busy: Interval[]): Interval[] {
   return out;
 }
 
-export interface SuggestedSlot extends Interval {
-  /** true = we suggest working here to hit the goal */
+/** Portions of `from` that are not covered by `minus`. */
+export function subtractIntervals(from: Interval[], minus: Interval[]): Interval[] {
+  const merged = mergeIntervals(minus);
+  const out: Interval[] = [];
+  for (const iv of from) {
+    let parts: Interval[] = [{ ...iv }];
+    for (const m of merged) {
+      if (m.end <= iv.start) continue;
+      if (m.start >= iv.end) break;
+      const next: Interval[] = [];
+      for (const p of parts) {
+        if (m.end <= p.start || m.start >= p.end) {
+          next.push(p);
+        } else {
+          if (m.start > p.start) next.push({ start: p.start, end: m.start });
+          if (m.end < p.end) next.push({ start: m.end, end: p.end });
+        }
+      }
+      parts = next;
+    }
+    out.push(...parts);
+  }
+  return out;
+}
+
+export interface SuggestedSlot {
+  start: number;
+  end: number;
   suggested: boolean;
 }
 
 export interface DayBudget {
   goalMs: number;
-  /** tracked timer sessions */
   trackedMs: number;
-  /** work events already passed (not overlapping tracked time is not checked — keep sessions and events separate) */
+  /** Work-event time already in the past (tracked time removed to avoid double counting). */
   workEventsDoneMs: number;
-  /** work events + focus blocks still ahead today */
+  /** Future work events + focus blocks (tracked time removed). */
   plannedMs: number;
-  /** goal − tracked − work done − planned (≥ 0) */
   remainingMs: number;
-  /** free time left in the work window from now on */
   freeLeftMs: number;
-  /** true when remaining work cannot fit in the free time left */
   overbooked: boolean;
-  /** free slots from now to window end; the first ones filling `remainingMs` are flagged */
   slots: SuggestedSlot[];
+  isWorkDay: boolean;
 }
 
 /**
- * The core day logic:
- *  - Work events count toward the daily goal (past part = done, future part = planned).
- *  - Non-work events are busy time that cannot be worked.
- *  - Remaining hours are laid into the earliest free gaps of the work window.
+ * Turn the day's calendar, focus blocks and tracked time into a budget:
+ * how much is done, how much is planned, how much is still unplaced, and where
+ * the remaining hours fit in the free gaps of the working window.
  */
 export function computeDayBudget(args: {
   day: Date;
   now: number;
-  goalHours: number;
-  trackedMs: number;
   events: CalendarEvent[];
   focusBlocks: FocusBlock[];
   settings: CalendarSettings;
-  /** Minimum gap worth suggesting (default 15 min) */
+  /** Tracked intervals, so a work event that is also a session is not counted twice. */
+  trackedIntervals?: Interval[];
+  goalHours?: number;
   minSlotMs?: number;
 }): DayBudget {
-  const { day, now, goalHours, trackedMs, events, focusBlocks, settings } = args;
+  const { day, now, settings, events, focusBlocks } = args;
+  const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
   const minSlot = args.minSlotMs ?? 15 * 60_000;
-  const goalMs = goalHours * 3600_000;
-  const win = workWindow(day, settings);
-  const dayIv = { start: startOfDay(day).getTime(), end: addDays(startOfDay(day), 1).getTime() };
+  const working = isWorkDay(day, settings);
+  const goalMs = working ? goalHours * 3600_000 : 0;
+
+  const dayIv = dayInterval(day);
+  const tracked = mergeIntervals(args.trackedIntervals ?? [])
+    .map((iv) => clip(iv, dayIv))
+    .filter((x): x is Interval => !!x);
+  const trackedMs = totalMs(tracked);
 
   const timed = events.filter((e) => !e.allDay);
-  const work = timed.filter((e) => e.isWork).map((e) => clip(eventInterval(e), dayIv)).filter((x): x is Interval => !!x);
-  const focus = focusBlocks.map((b) => clip(eventInterval(b), dayIv)).filter((x): x is Interval => !!x);
+  const work = timed
+    .filter((e) => e.isWork)
+    .map((e) => clip(eventInterval(e), dayIv))
+    .filter((x): x is Interval => !!x);
+  const focus = focusBlocks
+    .map((b) => clip(eventInterval(b), dayIv))
+    .filter((x): x is Interval => !!x);
   const busy = timed.filter((e) => !e.isWork).map(eventInterval);
 
-  const past = { start: dayIv.start, end: Math.min(now, dayIv.end) };
-  const future = { start: Math.max(now, dayIv.start), end: dayIv.end };
+  const pastBoundary = Math.min(args.now, dayIv.end);
+  const futureBoundary = Math.max(args.now, dayIv.start);
 
-  const workEventsDoneMs = totalMs(work.map((i) => clip(i, past)).filter((x): x is Interval => !!x));
-  const plannedMs = totalMs([...work, ...focus].map((i) => clip(i, future)).filter((x): x is Interval => !!x));
+  const workPast = work
+    .filter((i) => i.start < pastBoundary)
+    .map((i) => ({ start: i.start, end: Math.min(i.end, pastBoundary) }));
+  const workFuture = work
+    .filter((i) => i.end > futureBoundary)
+    .map((i) => ({ start: Math.max(i.start, futureBoundary), end: i.end }));
+  const focusFuture = focus
+    .filter((i) => i.end > futureBoundary)
+    .map((i) => ({ start: Math.max(i.start, futureBoundary), end: i.end }));
+
+  const workEventsDoneMs = totalMs(subtractIntervals(workPast, tracked));
+  const plannedMs = totalMs(subtractIntervals([...workFuture, ...focusFuture], tracked));
   const remainingMs = Math.max(0, goalMs - trackedMs - workEventsDoneMs - plannedMs);
 
-  const ahead = { start: Math.max(win.start, now), end: win.end };
-  const free = ahead.end > ahead.start ? freeIntervals(ahead, [...busy, ...work, ...focus]) : [];
-  const usable = free.filter((f) => f.end - f.start >= minSlot);
-  const freeLeftMs = usable.reduce((s, f) => s + (f.end - f.start), 0);
+  const freeAll = freeIntervals(workWindow(day, settings), [...busy, ...work, ...focus, ...tracked]);
+  const freeFuture = freeAll
+    .map((i) => ({ start: Math.max(i.start, futureBoundary), end: i.end }))
+    .filter((i) => i.end > i.start);
+  const freeLeftMs = totalMs(freeFuture);
 
-  let toPlace = remainingMs;
   const slots: SuggestedSlot[] = [];
-  for (const f of usable) {
+  let toPlace = remainingMs;
+  for (const f of freeFuture) {
+    const len = f.end - f.start;
     if (toPlace <= 0) {
       slots.push({ ...f, suggested: false });
-      continue;
-    }
-    const len = f.end - f.start;
-    if (len <= toPlace) {
+    } else if (len <= toPlace) {
       slots.push({ ...f, suggested: true });
       toPlace -= len;
     } else {
@@ -292,6 +393,56 @@ export function computeDayBudget(args: {
     freeLeftMs,
     overbooked: remainingMs > freeLeftMs,
     slots,
+    isWorkDay: working,
+  };
+}
+
+export interface DaySummary {
+  isWorkDay: boolean;
+  goalMs: number;
+  /** Tracked sessions + work events (deduplicated) */
+  doneMs: number;
+  trackedMs: number;
+  remainingMs: number;
+  progress: number;
+}
+
+/** Compact per-day totals used by the week-strip and month view. */
+export function summarizeDay(args: {
+  day: Date;
+  events: CalendarEvent[];
+  focusBlocks: FocusBlock[];
+  trackedIntervals: Interval[];
+  settings: CalendarSettings;
+  goalHours?: number;
+}): DaySummary {
+  const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
+  const working = isWorkDay(args.day, args.settings);
+  const goalMs = working ? goalHours * 3600_000 : 0;
+  const dayIv = dayInterval(args.day);
+
+  const tracked = mergeIntervals(args.trackedIntervals)
+    .map((iv) => clip(iv, dayIv))
+    .filter((x): x is Interval => !!x);
+  const trackedMs = totalMs(tracked);
+
+  const work = args.events
+    .filter((e) => !e.allDay && e.isWork)
+    .map((e) => clip(eventInterval(e), dayIv))
+    .filter((x): x is Interval => !!x);
+  const focus = args.focusBlocks
+    .map((b) => clip(eventInterval(b), dayIv))
+    .filter((x): x is Interval => !!x);
+
+  const doneMs = trackedMs + totalMs(subtractIntervals([...work, ...focus], tracked));
+
+  return {
+    isWorkDay: working,
+    goalMs,
+    doneMs,
+    trackedMs,
+    remainingMs: Math.max(0, goalMs - doneMs),
+    progress: goalMs > 0 ? Math.min(1, doneMs / goalMs) : 0,
   };
 }
 
@@ -299,29 +450,30 @@ export function computeDayBudget(args: {
 export function layoutColumns<T extends { start: string; end: string }>(
   items: T[],
 ): { item: T; col: number; cols: number }[] {
-  const sorted = [...items].sort((a, b) => eventInterval(a).start - eventInterval(b).start);
+  const sorted = [...items].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
   const out: { item: T; col: number; cols: number }[] = [];
   let group: { item: T; col: number; cols: number }[] = [];
-  let groupEnd = -Infinity;
+  let groupEnd = 0;
   const colEnds: number[] = [];
 
   const flush = () => {
-    const cols = Math.max(1, ...group.map((g) => g.col + 1));
-    group.forEach((g) => (g.cols = cols));
+    for (const g of group) g.cols = colEnds.length;
     out.push(...group);
     group = [];
     colEnds.length = 0;
+    groupEnd = 0;
   };
 
   for (const item of sorted) {
-    const iv = eventInterval(item);
-    if (iv.start >= groupEnd && group.length) flush();
-    let col = colEnds.findIndex((end) => end <= iv.start);
+    const start = new Date(item.start).getTime();
+    const end = new Date(item.end).getTime() || start + 1;
+    if (group.length && start >= groupEnd) flush();
+    let col = colEnds.findIndex((e) => e <= start);
     if (col === -1) col = colEnds.length;
-    colEnds[col] = iv.end;
+    colEnds[col] = end;
     group.push({ item, col, cols: 1 });
-    groupEnd = Math.max(groupEnd, iv.end);
+    groupEnd = Math.max(groupEnd, end);
   }
-  if (group.length) flush();
+  flush();
   return out;
 }

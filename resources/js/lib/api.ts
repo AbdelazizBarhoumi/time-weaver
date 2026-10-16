@@ -38,6 +38,8 @@ export interface ApiWorkSession {
   start: string;
   end: string | null;
   note: string;
+  source?: 'manual' | 'calendar';
+  calendarEventId?: string | null;
   pausedMs: number;
   pausedAt: string | null;
   segments: Segment[];
