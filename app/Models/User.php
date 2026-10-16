@@ -30,4 +30,14 @@ class User extends Authenticatable
     {
         return $this->hasMany(WorkSession::class)->orderBy('start', 'desc');
     }
+
+    public function calendarAccounts(): HasMany
+    {
+        return $this->hasMany(CalendarAccount::class)->orderBy('id');
+    }
+
+    public function focusBlocks(): HasMany
+    {
+        return $this->hasMany(FocusBlock::class);
+    }
 }

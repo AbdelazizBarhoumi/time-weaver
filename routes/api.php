@@ -1,6 +1,10 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CalendarAccountController;
+use App\Http\Controllers\CalendarEventController;
+use App\Http\Controllers\CalendarSettingsController;
+use App\Http\Controllers\FocusBlockController;
 use App\Http\Controllers\WorkSessionController;
 use App\Models\WorkSession;
 use Illuminate\Support\Facades\Gate;
@@ -21,6 +25,19 @@ Route::middleware('auth:web')->group(function () {
 
     Route::apiResource('sessions', WorkSessionController::class)
         ->only(['index', 'store', 'show', 'update', 'destroy']);
+
+    // Calendar
+    Route::get('calendar/accounts', [CalendarAccountController::class, 'index']);
+    Route::get('calendar/google/redirect', [CalendarAccountController::class, 'redirect']);
+    Route::get('calendar/google/callback', [CalendarAccountController::class, 'callback']);
+    Route::delete('calendar/accounts/{accountId}', [CalendarAccountController::class, 'destroy']);
+    Route::get('calendar/events', [CalendarEventController::class, 'index']);
+    Route::put('calendar/events/tag', [CalendarEventController::class, 'tag']);
+    Route::get('calendar/settings', [CalendarSettingsController::class, 'show']);
+    Route::put('calendar/settings', [CalendarSettingsController::class, 'update']);
+    Route::apiResource('focus-blocks', FocusBlockController::class)
+        ->only(['index', 'store', 'update', 'destroy'])
+        ->parameters(['focus-blocks' => 'blockId']);
 
     // Debug route
     Route::get('/debug-policy', function () {
