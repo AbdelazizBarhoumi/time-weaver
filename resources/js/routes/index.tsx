@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Heatmap } from "@/components/Heatmap";
 import { ManualEntryDialog } from "@/components/ManualEntryDialog";
@@ -226,6 +226,12 @@ function Index() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to="/calendar"
+              className="rounded-lg bg-panel px-3 py-2 font-mono text-xs text-mut ring-1 ring-line transition-colors hover:text-neon"
+            >
+              ◷ Calendar
+            </Link>
             <div className="rounded-lg bg-panel px-3 py-2 font-mono text-xs ring-1 ring-line">
               {todayHours.toFixed(1)}h <span className="text-mut">/ {DAILY_GOAL_HOURS}h</span>
             </div>
