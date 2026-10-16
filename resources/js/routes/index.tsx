@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Heatmap } from "@/components/Heatmap";
 import { ManualEntryDialog } from "@/components/ManualEntryDialog";
@@ -187,6 +187,12 @@ function Index() {
             <div className="rounded-lg bg-neon/10 px-3 py-2 font-mono text-xs text-neon ring-1 ring-neon/40">
               ⚡ {stats?.streak ?? 0} streak
             </div>
+            <Link
+              to="/calendar"
+              className="rounded-lg bg-panel px-3 py-2 font-mono text-xs text-ink ring-1 ring-line transition hover:ring-neon/40"
+            >
+              Calendar
+            </Link>
             <button
               onClick={resetAll}
               title="Clear all data"
