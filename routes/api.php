@@ -1,7 +1,11 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CalendarAccountController;
+use App\Http\Controllers\CalendarEventController;
+use App\Http\Controllers\CalendarSettingsController;
 use App\Http\Controllers\DayOffController;
+use App\Http\Controllers\FocusBlockController;
 use App\Http\Controllers\WorkSessionController;
 use App\Models\WorkSession;
 use Illuminate\Support\Facades\Gate;
@@ -26,6 +30,26 @@ Route::middleware('auth:web')->group(function () {
     Route::get('day-offs', [DayOffController::class, 'index']);
     Route::post('day-offs', [DayOffController::class, 'store']);
     Route::delete('day-offs/{date}', [DayOffController::class, 'destroy']);
+
+    // Calendar: connected Google accounts
+    Route::get('calendar/accounts', [CalendarAccountController::class, 'index']);
+    Route::post('calendar/accounts/connect', [CalendarAccountController::class, 'redirect']);
+    Route::get('calendar/google/callback', [CalendarAccountController::class, 'callback']);
+    Route::delete('calendar/accounts/{account}', [CalendarAccountController::class, 'destroy']);
+
+    // Calendar: events and manual work tags
+    Route::get('calendar/events', [CalendarEventController::class, 'index']);
+    Route::post('calendar/events/tag', [CalendarEventController::class, 'tag']);
+
+    // Calendar: work-hours settings
+    Route::get('calendar/settings', [CalendarSettingsController::class, 'show']);
+    Route::put('calendar/settings', [CalendarSettingsController::class, 'update']);
+
+    // Calendar: focus blocks
+    Route::get('calendar/focus-blocks', [FocusBlockController::class, 'index']);
+    Route::post('calendar/focus-blocks', [FocusBlockController::class, 'store']);
+    Route::put('calendar/focus-blocks/{block}', [FocusBlockController::class, 'update']);
+    Route::delete('calendar/focus-blocks/{block}', [FocusBlockController::class, 'destroy']);
 
     // Debug route
     Route::get('/debug-policy', function () {

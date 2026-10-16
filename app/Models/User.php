@@ -35,4 +35,14 @@ class User extends Authenticatable
     {
         return $this->hasMany(UserDayOff::class);
     }
+
+    public function calendarAccounts(): HasMany
+    {
+        return $this->hasMany(CalendarAccount::class);
+    }
+
+    public function focusBlocks(): HasMany
+    {
+        return $this->hasMany(FocusBlock::class);
+    }
 }
