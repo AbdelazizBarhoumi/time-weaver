@@ -497,9 +497,10 @@ export function formatHM(ms: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
+/** Clock time in 12-hour local time, e.g. "9:30 AM". */
 export function formatTime(isoStr: string): string {
   const d = new Date(isoStr);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 }
 
 export function newId(): string {

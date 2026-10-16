@@ -8,6 +8,7 @@ import { TimerCard } from "@/components/TimerCard";
 import { TodayPlanCard } from "@/components/TodayPlanCard";
 import { FloatingTimerWidget } from "@/components/FloatingTimerWidget";
 import { EditSessionDialog } from "@/components/EditSessionDialog";
+import { useConfirm } from "@/components/ConfirmDialog";
 import {
   dayKey,
   hoursForDay,
@@ -85,6 +86,7 @@ function Index() {
   const createSession = useCreateSession();
   const updateSession = useUpdateSession();
   const deleteSession = useDeleteSession();
+  const confirm = useConfirm();
   const addDayOff = useAddDayOff();
   const removeDayOff = useRemoveDayOff();
 
@@ -143,7 +145,17 @@ function Index() {
     }
   };
 
-  const handleDeleteSession = (id: string) => {
+  const handleDeleteSession = async (id: string) => {
+    const confirmed = await confirm({
+      title: "Delete this session?",
+      description: "The tracked time is removed permanently.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!confirmed) {
+      return;
+    }
+
     deleteSession.mutate(Number(id));
   };
 

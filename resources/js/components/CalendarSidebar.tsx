@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Briefcase, Eye, EyeOff, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import {
   connectGoogleAccount,
@@ -69,6 +70,7 @@ export function AccountsCard({
   onRestoreHidden: (id: number) => void;
 }) {
   const disconnect = useDisconnectAccount();
+  const confirm = useConfirm();
   const hasConnected = accounts.some((a) => !a.disconnected);
 
   return (
@@ -149,8 +151,14 @@ export function AccountsCard({
               <button
                 className="mt-0.5 text-mut hover:text-destructive"
                 title="Remove saved events"
-                onClick={() => {
-                  if (confirm(`Remove all saved events for ${a.email}?`)) onPurge(a.id);
+                onClick={async () => {
+                  const confirmed = await confirm({
+                    title: "Remove saved events?",
+                    description: `Remove all saved events for ${a.email}. This cannot be undone.`,
+                    confirmLabel: "Remove",
+                    destructive: true,
+                  });
+                  if (confirmed) onPurge(a.id);
                 }}
               >
                 <Trash2 className="h-4 w-4" />
@@ -159,8 +167,13 @@ export function AccountsCard({
               <button
                 className="mt-0.5 hidden text-mut hover:text-destructive group-hover:block"
                 title="Disconnect"
-                onClick={() => {
-                  if (confirm(`Disconnect ${a.email}? Its saved events stay on the calendar.`)) disconnect.mutate(a.id);
+                onClick={async () => {
+                  const confirmed = await confirm({
+                    title: "Disconnect account?",
+                    description: `Disconnect ${a.email}? Its saved events stay on the calendar.`,
+                    confirmLabel: "Disconnect",
+                  });
+                  if (confirmed) disconnect.mutate(a.id);
                 }}
               >
                 <X className="h-4 w-4" />

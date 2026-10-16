@@ -2,6 +2,7 @@ import React, { ReactElement } from "react";
 import { render, RenderOptions, RenderResult } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
+import { ConfirmProvider } from "@/components/ConfirmDialog";
 import { routeTree } from "@/routeTree.gen";
 
 interface TestContext {
@@ -36,7 +37,11 @@ interface WrapperOptions {
 function TestWrapper({ queryClient, router, children }: WrapperOptions) {
     const ctx = queryClient || router ? { queryClient: queryClient!, router: router! } : createTestContext();
 
-    return <QueryClientProvider client={ctx.queryClient}>{children}</QueryClientProvider>;
+    return (
+        <QueryClientProvider client={ctx.queryClient}>
+            <ConfirmProvider>{children}</ConfirmProvider>
+        </QueryClientProvider>
+    );
 }
 
 function customRender(

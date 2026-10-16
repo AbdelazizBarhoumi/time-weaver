@@ -70,6 +70,12 @@ function timeZoneLabel(): string {
   }
 }
 
+/** Hour-gutter label in 12-hour time: 0 → "12 AM", 13 → "1 PM". */
+function hourLabel(minutes: number): string {
+  const hour = Math.floor(minutes / 60) % 24;
+  return `${hour % 12 === 0 ? 12 : hour % 12} ${hour < 12 ? "AM" : "PM"}`;
+}
+
 export function CalendarView(props: Props) {
   const { firstDay, dayCount, now, settings, density, events, summaries } = props;
   const winStart = density === "full" ? 0 : hhmmToMinutes(settings.workStart);
@@ -89,19 +95,17 @@ export function CalendarView(props: Props) {
   const tz = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const workBand = { top: minuteToPx(hhmmToMinutes(settings.workStart)), bottom: minuteToPx(hhmmToMinutes(settings.workEnd)) };
 
-  // Keep the current-time line in view when the calendar opens.
+  // Open the day scrolled to the working hours, not the current time.
   const scrolledFor = useRef<string>("");
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const key = `${firstDay.toDateString()}-${dayCount}-${density}`;
+    const key = `${firstDay.toDateString()}-${dayCount}-${density}-${settings.workStart}`;
     if (scrolledFor.current === key) return;
     scrolledFor.current = key;
-    const nowMin = (now - startOfDay(new Date(now)).getTime()) / 60_000;
-    const target = (minuteToPx(Math.max(winStart, nowMin - 90)) / 60) * 60;
-    container.scrollTop = Math.max(0, target);
+    container.scrollTop = Math.max(0, minuteToPx(hhmmToMinutes(settings.workStart)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstDay, dayCount, density]);
+  }, [firstDay, dayCount, density, settings.workStart]);
 
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-line bg-panel lg:min-h-0 lg:flex-1">
@@ -128,7 +132,7 @@ export function CalendarView(props: Props) {
                 className="absolute right-2 -translate-y-1/2 font-mono text-[10px] text-mut"
                 style={{ top: minuteToPx(m) }}
               >
-                {String(Math.floor(m / 60)).padStart(2, "0")}:00
+                {m < 1440 ? hourLabel(m) : ""}
               </div>
             ))}
           </div>

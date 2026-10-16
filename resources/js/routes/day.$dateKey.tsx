@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ManualEntryDialog } from "@/components/ManualEntryDialog";
 import { EditSessionDialog } from "@/components/EditSessionDialog";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { SegmentBreakdown } from "@/components/SegmentBreakdown";
 import {
   useAddDayOff,
@@ -110,6 +111,7 @@ function DayDetailPage() {
   const createSession = useCreateSession();
   const updateSession = useUpdateSession();
   const deleteSession = useDeleteSession();
+  const confirm = useConfirm();
   const addDayOff = useAddDayOff();
   const removeDayOff = useRemoveDayOff();
 
@@ -146,8 +148,14 @@ function DayDetailPage() {
     setEditOpen(true);
   };
 
-  const handleDeleteSession = (id: string) => {
-    if (!confirm("Delete this session?")) {
+  const handleDeleteSession = async (id: string) => {
+    const confirmed = await confirm({
+      title: "Delete this session?",
+      description: "The tracked time is removed permanently.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!confirmed) {
       return;
     }
 

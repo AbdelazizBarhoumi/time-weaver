@@ -106,6 +106,33 @@
   }
 }
 
+/*
+ * Tailwind v4 resets buttons to `cursor: default` and the primitives below opt
+ * into `cursor-default` too, so clickable things did not show the hand cursor.
+ * These rules sit outside `@layer base` on purpose: unlayered declarations
+ * outrank the utilities layer, so they win over `cursor-default` without
+ * `!important`. Disabled controls are excluded so they keep `not-allowed`.
+ */
+button:not(:disabled):not([aria-disabled="true"]),
+input:is([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"], [type="file"]):not(:disabled),
+select:not(:disabled),
+summary,
+label[for]:not([aria-disabled="true"]),
+a[href],
+[role="button"]:not([aria-disabled="true"]),
+[role="link"],
+[role="menuitem"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="menuitemcheckbox"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="menuitemradio"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="option"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="tab"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="checkbox"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="radio"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="switch"]:not([data-disabled]):not([aria-disabled="true"]),
+[role="combobox"]:not([data-disabled]):not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
 @utility grid-bg {
   background-image:
     linear-gradient(to right, rgba(55, 240, 149, 0.05) 1px, transparent 1px),

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { CalendarView, type CalendarDensity } from "@/components/CalendarView";
 import { MonthView } from "@/components/MonthView";
 import { AccountsCard, BudgetCard, Legend, SettingsCard } from "@/components/CalendarSidebar";
+import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import {
   addDays,
   computeDayBudget,
@@ -64,15 +65,17 @@ const DEFAULT_SETTINGS: CalendarSettings = {
   workDays: [1, 2, 3, 4, 5],
 };
 
-const DENSITY_KEY = "shiftgrid.calendar.density";
+// The ".v2" suffix retires the older default of "work"; the calendar now opens
+// on the whole day and merely scrolls to the working hours.
+const DENSITY_KEY = "shiftgrid.calendar.density.v2";
 const HIDDEN_KEY = "shiftgrid.calendar.hidden";
 
 function readDensity(): CalendarDensity {
   try {
     const value = localStorage.getItem(DENSITY_KEY);
-    return value === "full" ? "full" : "work";
+    return value === "work" ? "work" : "full";
   } catch {
-    return "work";
+    return "full";
   }
 }
 
@@ -125,6 +128,8 @@ function CalendarPage() {
   const deleteFocus = useDeleteFocusBlock();
   const createSession = useCreateSession();
   const deleteSession = useDeleteSession();
+  const confirm = useConfirm();
+  const prompt = usePrompt();
   const syncCalendars = useSyncCalendars();
   const purgeEvents = usePurgeAccountEvents();
   const restoreEvents = useRestoreAccountEvents();
@@ -259,16 +264,29 @@ function CalendarPage() {
     });
   };
 
-  const removeSession = (session: CalendarSession) => {
+  const removeSession = async (session: CalendarSession) => {
+    const confirmed = await confirm({
+      title: "Delete this session?",
+      description: "The tracked time is removed permanently.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!confirmed) return;
+
     deleteSession.mutate(session.id, { onSuccess: () => toast.success("Session deleted") });
   };
 
-  const removeEvent = (event: CalendarEvent, scope: DeleteScope, permanent: boolean) => {
+  const removeEvent = async (event: CalendarEvent, scope: DeleteScope, permanent: boolean) => {
     const target = scope === "series" ? `every saved event in the "${event.title}" series` : `"${event.title}"`;
-    const message = permanent
-      ? `Permanently delete ${target}?\n\nIt stays gone: future syncs will not bring it back.`
-      : `Delete ${target} from the database?\n\nA later sync will bring it back if it still exists in Google.`;
-    if (!confirm(message)) return;
+    const confirmed = await confirm({
+      title: permanent ? "Permanently delete?" : "Delete from database?",
+      description: permanent
+        ? `Permanently delete ${target}. It stays gone: future syncs will not bring it back.`
+        : `Delete ${target}. A later sync will bring it back if it still exists in Google.`,
+      confirmLabel: permanent ? "Delete permanently" : "Delete",
+      destructive: true,
+    });
+    if (!confirmed) return;
 
     deleteEvent.mutate(
       { cacheId: event.cacheId, scope, permanent },
@@ -281,16 +299,15 @@ function CalendarPage() {
     );
   };
 
-  const restoreHidden = (id: number) => {
+  const restoreHidden = async (id: number) => {
     const account = accounts.data?.find((a) => a.id === id);
     const count = account?.hiddenCount ?? 0;
-    if (
-      !confirm(
-        `Restore ${count} permanently deleted event${count === 1 ? "" : "s"} for ${account?.email ?? "this account"}?\n\nThe next sync will load them again.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: "Restore deleted events?",
+      description: `Restore ${count} permanently deleted event${count === 1 ? "" : "s"} for ${account?.email ?? "this account"}. The next sync will load them again.`,
+      confirmLabel: "Restore",
+    });
+    if (!confirmed) return;
 
     restoreEvents.mutate(id, {
       onSuccess: (r) => toast.success(`Restored ${r.restored} hidden event${r.restored === 1 ? "" : "s"}`),
@@ -410,12 +427,31 @@ function CalendarPage() {
                 onToggleWork={(e) => onToggleWork(e)}
                 onResetWork={(e) => onResetWork(e)}
                 onDeleteEvent={removeEvent}
-                onCreateFocus={(start, end) => {
-                  const title = prompt("Name this work block", "Focus block");
+                onCreateFocus={async (start, end) => {
+                  const title = await prompt({
+                    title: "New work block",
+                    label: "Block name",
+                    defaultValue: "Focus block",
+                    placeholder: "Focus block",
+                    confirmLabel: "Create block",
+                  });
                   if (title === null) return;
-                  createFocus.mutate({ title: title || "Focus block", start: start.toISOString(), end: end.toISOString() });
+
+                  createFocus.mutate({
+                    title: title.trim() || "Focus block",
+                    start: start.toISOString(),
+                    end: end.toISOString(),
+                  });
                 }}
-                onDeleteFocus={(b) => deleteFocus.mutate(b.id)}
+                onDeleteFocus={async (b) => {
+                  const confirmed = await confirm({
+                    title: "Delete this block?",
+                    description: `Delete the planned block "${b.title}".`,
+                    confirmLabel: "Delete",
+                    destructive: true,
+                  });
+                  if (confirmed) deleteFocus.mutate(b.id);
+                }}
                 onStartFocus={(b) => createSession.mutate({ start: new Date().toISOString(), note: b.title })}
                 onLogWork={logWork}
                 onDeleteSession={removeSession}

@@ -211,13 +211,15 @@ describe("lib/tracker utilities", () => {
     });
 
     describe("formatTime", () => {
-        it("formats ISO string to HH:MM", () => {
-            // formatTime uses local time, so we test with a known offset
-            const result1 = formatTime("2026-10-07T09:30:00.000Z");
-            const result2 = formatTime("2026-10-07T17:05:00.000Z");
-            // Just verify it returns HH:MM format
-            expect(result1).toMatch(/^\d{2}:\d{2}$/);
-            expect(result2).toMatch(/^\d{2}:\d{2}$/);
+        it("formats an ISO string as 12-hour local time", () => {
+            // Built from local parts so the assertion holds in any timezone.
+            const at = (h: number, m: number) => formatTime(new Date(2026, 9, 7, h, m, 0, 0).toISOString());
+
+            expect(at(9, 30)).toBe("9:30 AM");
+            expect(at(17, 5)).toBe("5:05 PM");
+            expect(at(0, 5)).toBe("12:05 AM");
+            expect(at(12, 0)).toBe("12:00 PM");
+            expect(at(23, 59)).toBe("11:59 PM");
         });
     });
 
