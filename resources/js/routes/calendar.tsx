@@ -7,10 +7,12 @@ import { cn } from "@/lib/utils";
 import { CalendarView, type CalendarDensity } from "@/components/CalendarView";
 import { MonthView } from "@/components/MonthView";
 import { AccountsCard, BudgetCard, Legend, SettingsCard, WorkableTimeCard } from "@/components/CalendarSidebar";
+import { DayIntelligenceCard } from "@/components/DayIntelligenceCard";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import {
   addDays,
   computeDayBudget,
+  computeDayInsights,
   computeWorkableTimeLeft,
   isWorkDay,
   relativeTime,
@@ -39,7 +41,7 @@ import {
   type DeleteScope,
   type Interval,
 } from "@/lib/calendar";
-import { useCreateSession, useDeleteSession, useSessions } from "@/lib/queries";
+import { useCreateSession, useDeleteSession, useMonthlyBreakdown, useSessions, useStats } from "@/lib/queries";
 import { DAILY_GOAL_HOURS, formatHM, formatTime } from "@/lib/tracker";
 import type { ApiWorkSession } from "@/lib/api";
 
@@ -124,6 +126,8 @@ function CalendarPage() {
   const eventsQ = useCalendarEvents(rangeFrom, rangeTo);
   const focusQ = useFocusBlocks(rangeFrom, rangeTo);
   const sessionsQ = useSessions({ from: rangeFrom.toISOString(), to: rangeTo.toISOString(), per_page: 500 });
+  const statsQ = useStats();
+  const monthlyQ = useMonthlyBreakdown(2);
 
   const tag = useTagEvent();
   const createFocus = useCreateFocusBlock();
@@ -203,6 +207,25 @@ function CalendarPage() {
     () => computeWorkableTimeLeft({ day: todayStart, now, events, settings }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [events, settings, now],
+  );
+
+  const currentMonth = monthlyQ.data?.find((m) => m.isCurrent);
+
+  const intel = useMemo(
+    () =>
+      computeDayInsights({
+        day: todayStart,
+        now,
+        goalHours: DAILY_GOAL_HOURS,
+        trackedIntervals: todayIntervals,
+        events,
+        focusBlocks,
+        settings,
+        backlogHours: statsQ.data?.backlogHours ?? null,
+        perDayNeededHours: currentMonth?.perDayNeeded ?? null,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [events, focusBlocks, settings, now, sessions, statsQ.data, currentMonth],
   );
 
   const summaries: DaySummary[] = useMemo(() => {
@@ -476,6 +499,7 @@ function CalendarPage() {
         </div>
 
         <aside className="min-h-0 space-y-4 lg:overflow-y-auto lg:pr-1">
+          <DayIntelligenceCard intel={intel} />
           <WorkableTimeCard workable={workable} />
           <BudgetCard budget={budget} />
           <AccountsCard

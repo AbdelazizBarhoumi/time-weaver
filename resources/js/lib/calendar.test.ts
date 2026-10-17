@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   computeDayBudget,
+  computeDayInsights,
   computeWorkableTimeLeft,
   freeIntervals,
   isRequiredDay,
@@ -301,6 +302,115 @@ describe("computeWorkableTimeLeft", () => {
     const workable = computeWorkableTimeLeft({ day: saturday, now: noon, events: [], settings });
     expect(workable.isWorkDay).toBe(false);
     expect(workable.isRequiredDay).toBe(false);
+  });
+});
+
+describe("computeDayInsights", () => {
+  const noon = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 12, 0).getTime();
+  const base = { day: wednesday, now: noon, focusBlocks: [], settings };
+
+  it("flags a day that is fully booked", () => {
+    // Non-work events covering noon → 17:00 leave no free time.
+    const events = [makeEvent({ start: at(wednesday, 12), end: at(wednesday, 17) })];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [] });
+    expect(intel.insights.map((i) => i.id)).toContain("fully-booked");
+  });
+
+  it("flags a tight day where meetings dominate the window", () => {
+    // 4h of meetings in the 5h remaining window = 80%.
+    const events = [makeEvent({ start: at(wednesday, 13), end: at(wednesday, 17) })];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [] });
+    expect(intel.insights.map((i) => i.id)).toContain("tight");
+  });
+
+  it("suggests a deep-work window when a long free gap exists", () => {
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [] });
+    const deep = intel.insights.find((i) => i.id === "deep-work");
+    expect(deep).toBeDefined();
+    expect(intel.longestGapMs).toBeGreaterThanOrEqual(90 * 60_000);
+  });
+
+  it("reports free time when the calendar is clear", () => {
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [] });
+    expect(intel.insights.map((i) => i.id)).toContain("free-time");
+    expect(intel.facts.freeMs).toBe(5 * 3_600_000);
+  });
+
+  it("flags back-to-back meetings", () => {
+    const events = [
+      makeEvent({ start: at(wednesday, 13), end: at(wednesday, 14) }),
+      makeEvent({ start: at(wednesday, 14), end: at(wednesday, 15) }),
+      makeEvent({ start: at(wednesday, 15), end: at(wednesday, 16) }),
+    ];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [] });
+    expect(intel.insights.map((i) => i.id)).toContain("back-to-back");
+  });
+
+  it("flags an optional day as good", () => {
+    const sunday = new Date(2026, 9, 18);
+    const sundayNoon = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate(), 12).getTime();
+    const intel = computeDayInsights({
+      day: sunday,
+      now: sundayNoon,
+      events: [],
+      focusBlocks: [],
+      trackedIntervals: [],
+      settings: { ...settings, workDays: [0, 3, 4, 5, 6], requiredDays: [3, 4, 5] },
+    });
+    expect(intel.insights.map((i) => i.id)).toContain("optional-day");
+  });
+
+  it("warns when working on a day off", () => {
+    const events = [makeEvent({ start: at(saturday, 13), end: at(saturday, 14) })];
+    const satNoon = new Date(saturday.getFullYear(), saturday.getMonth(), saturday.getDate(), 12).getTime();
+    const intel = computeDayInsights({
+      day: saturday,
+      now: satNoon,
+      events,
+      focusBlocks: [],
+      trackedIntervals: [],
+      settings,
+    });
+    const dayOff = intel.insights.find((i) => i.id === "day-off");
+    expect(dayOff?.tone).toBe("warn");
+  });
+
+  it("flags an overbooked required day as critical", () => {
+    // A work event plus focus block cover the whole window, but the goal is still unmet.
+    const events = [makeEvent({ isWork: true, start: at(wednesday, 12), end: at(wednesday, 17) })];
+    const focus = [{ id: 1, title: "Focus", start: at(wednesday, 12), end: at(wednesday, 17) }];
+    const intel = computeDayInsights({
+      day: wednesday,
+      now: noon,
+      events,
+      focusBlocks: focus,
+      trackedIntervals: [],
+      settings,
+    });
+    expect(intel.insights.some((i) => i.id === "overbooked" && i.tone === "critical")).toBe(true);
+  });
+
+  it("sorts worst tone first", () => {
+    const events = [makeEvent({ start: at(wednesday, 12), end: at(wednesday, 17) })];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [] });
+    const rank: Record<string, number> = { critical: 0, warn: 1, info: 2, good: 3 };
+    for (let i = 1; i < intel.insights.length; i++) {
+      const prev = intel.insights[i - 1];
+      const curr = intel.insights[i];
+      if (prev && curr) {
+        expect(rank[prev.tone] ?? 99).toBeLessThanOrEqual(rank[curr.tone] ?? 99);
+      }
+    }
+  });
+
+  it("builds a facts payload for the coach", () => {
+    const events = [makeEvent({ title: "Client sync", start: at(wednesday, 13), end: at(wednesday, 14) })];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [], backlogHours: 3.5, perDayNeededHours: 4 });
+    expect(intel.facts.dayKey).toBe("2026-10-14");
+    expect(intel.facts.meetings.length).toBe(1);
+    expect(intel.facts.eventTitles).toContain("Client sync");
+    expect(intel.facts.backlogHours).toBe(3.5);
+    expect(intel.facts.perDayNeededHours).toBe(4);
   });
 });
 

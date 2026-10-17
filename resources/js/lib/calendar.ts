@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
-import { DAILY_GOAL_HOURS, type Segment } from "./tracker";
+import { DAILY_GOAL_HOURS, formatHM, type Segment } from "./tracker";
 
 export interface CalendarAccount {
   id: number;
@@ -135,6 +135,14 @@ export interface TagEventInput {
   allDay?: boolean;
 }
 
+/** Response from the AI coach endpoint. */
+export interface CoachResponse {
+  available: boolean;
+  text?: string;
+  generatedAt?: string;
+  message?: string;
+}
+
 export const calendarApi = {
   accounts: () => api.get<CalendarAccount[]>("/calendar/accounts").then((r) => r.data),
   connectUrl: () => api.post<{ url: string }>("/calendar/accounts/connect").then((r) => r.data.url),
@@ -185,6 +193,8 @@ export const calendarApi = {
   createFocusBlock: (b: { title?: string; start: string; end: string }) =>
     api.post<FocusBlock>("/calendar/focus-blocks", b).then((r) => r.data),
   deleteFocusBlock: (id: number) => api.delete(`/calendar/focus-blocks/${id}`),
+  coachStatus: () => api.get<{ available: boolean }>("/calendar/coach/status").then((r) => r.data),
+  coach: (facts: DayFacts) => api.post<CoachResponse>("/calendar/coach", { facts }).then((r) => r.data),
 };
 
 /* ---------------------------------------------------------------- Hooks */
@@ -211,6 +221,20 @@ export function useFocusBlocks(from: Date, to: Date) {
   const f = from.toISOString();
   const t = to.toISOString();
   return useQuery({ queryKey: ["calendar", "focus", f, t], queryFn: () => calendarApi.focusBlocks(f, t) });
+}
+
+/** Whether the AI coach is configured on the server. */
+export function useCoachStatus() {
+  return useQuery({
+    queryKey: ["calendar", "coach-status"],
+    queryFn: calendarApi.coachStatus,
+    staleTime: 60 * 60_000,
+  });
+}
+
+/** On-demand AI coaching: only runs when the user clicks the button. */
+export function useDayCoach() {
+  return useMutation({ mutationFn: (facts: DayFacts) => calendarApi.coach(facts) });
 }
 
 function useCalendarMutation<TArg, TResult>(fn: (arg: TArg) => Promise<TResult>) {
@@ -622,6 +646,54 @@ export function computeWorkableTimeLeft(args: {
   };
 }
 
+export type InsightTone = "good" | "info" | "warn" | "critical";
+
+export interface CoachMeeting {
+  title: string;
+  start: string;
+  end: string;
+}
+
+export interface DayFacts {
+  dayKey: string;
+  isWorkDay: boolean;
+  isRequiredDay: boolean;
+  now: string;
+  windowStart: string | null;
+  windowEnd: string | null;
+  windowMs: number;
+  busyMs: number;
+  freeMs: number;
+  longestGapMs: number;
+  trackedMs: number;
+  goalMs: number;
+  remainingMs: number;
+  meetings: CoachMeeting[];
+  backlogHours: number | null;
+  perDayNeededHours: number | null;
+  eventTitles: string[];
+}
+
+export interface DayInsight {
+  id: string;
+  tone: InsightTone;
+  title: string;
+  detail: string;
+  hint?: string;
+}
+
+export interface DayIntelligence {
+  insights: DayInsight[];
+  tone: InsightTone;
+  longestGapMs: number;
+  facts: DayFacts;
+}
+
+export function formatTime(isoOrMs: string | number): string {
+  const d = typeof isoOrMs === "number" ? new Date(isoOrMs) : new Date(isoOrMs);
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
 export interface DaySummary {
   /** The user can work this day (it is not a day off). */
   isWorkDay: boolean;
@@ -674,6 +746,260 @@ export function summarizeDay(args: {
     remainingMs: Math.max(0, goalMs - doneMs),
     progress: goalMs > 0 ? Math.min(1, doneMs / goalMs) : 0,
   };
+}
+
+/* ------------------------------------------------------ Day intelligence */
+
+export function computeDayInsights(args: {
+  day: Date;
+  now: number;
+  events: CalendarEvent[];
+  focusBlocks: FocusBlock[];
+  settings: CalendarSettings;
+  trackedIntervals?: Interval[];
+  goalHours?: number;
+  backlogHours?: number | null;
+  perDayNeededHours?: number | null;
+}): DayIntelligence {
+  const budget = computeDayBudget(args);
+  const window = workWindow(args.day, args.settings);
+  const start = Math.max(window.start, args.now);
+  const windowEnd = window.end;
+  const remainingWindowMs = Math.max(0, windowEnd - start);
+  const dayIv = dayInterval(args.day);
+
+  const timed = args.events.filter((e) => !e.allDay);
+  const busyAll = timed.filter((e) => !e.isWork);
+  const workAll = timed.filter((e) => e.isWork);
+
+  const busyFromNow = busyAll
+    .map((e) => clip(eventInterval(e), { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+  const workFromNow = workAll
+    .map((e) => clip(eventInterval(e), { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+  const focusFromNow = args.focusBlocks
+    .map((b) => clip(eventInterval(b), { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+  const trackedFromNow = mergeIntervals(args.trackedIntervals ?? [])
+    .map((iv) => clip(iv, { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+
+  const busyMs = totalMs(busyFromNow);
+  const freeGaps = remainingWindowMs > 0 ? freeIntervals({ start, end: windowEnd }, [...busyFromNow, ...workFromNow, ...focusFromNow, ...trackedFromNow]) : [];
+  const freeMs = totalMs(freeGaps);
+  const longestGapMs = freeGaps.reduce((max, iv) => Math.max(max, iv.end - iv.start), 0);
+
+  const dayEvents = timed.filter((e) => {
+    const iv = eventInterval(e);
+    return iv.start < dayIv.end && iv.end > dayIv.start;
+  });
+  const meetings: CoachMeeting[] = dayEvents
+    .filter((e) => !e.isWork)
+    .map((e) => ({ title: e.title, start: e.start, end: e.end }))
+    .sort((a, b) => a.start.localeCompare(b.start));
+  const eventTitles = Array.from(new Set(dayEvents.map((e) => e.title)));
+
+  const fmtDay = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const fmtIso = (ms: number) => new Date(ms).toISOString();
+
+  const facts: DayFacts = {
+    dayKey: fmtDay(args.day),
+    isWorkDay: budget.isWorkDay,
+    isRequiredDay: budget.isRequiredDay,
+    now: fmtIso(args.now),
+    windowStart: remainingWindowMs > 0 ? fmtIso(start) : null,
+    windowEnd: remainingWindowMs > 0 ? fmtIso(windowEnd) : null,
+    windowMs: remainingWindowMs,
+    busyMs,
+    freeMs,
+    longestGapMs,
+    trackedMs: budget.trackedMs,
+    goalMs: budget.goalMs,
+    remainingMs: budget.remainingMs,
+    meetings,
+    backlogHours: args.backlogHours ?? null,
+    perDayNeededHours: args.perDayNeededHours ?? null,
+    eventTitles,
+  };
+
+  const insights: DayInsight[] = [];
+
+  // R1 — day off, or working on a day off
+  if (!budget.isWorkDay) {
+    const busy = budget.trackedMs > 0 || dayEvents.length > 0;
+    insights.push({
+      id: "day-off",
+      tone: busy ? "warn" : "info",
+      title: busy ? "Working on a day off" : "Day off",
+      detail: busy
+        ? "You have events or tracked time on a day you normally take off."
+        : "Today is not a working day, so nothing is expected of you.",
+    });
+  }
+
+  // R2 — optional day
+  if (budget.isWorkDay && !budget.isRequiredDay) {
+    insights.push({
+      id: "optional-day",
+      tone: "good",
+      title: "Optional day",
+      detail: "Nothing is owed today. Anything you track counts as extra.",
+    });
+  }
+
+  // R3/R4/R5 — capacity warnings
+  const capacity = remainingWindowMs > 0 ? busyMs / remainingWindowMs : 0;
+  if (remainingWindowMs > 0) {
+    if (freeMs === 0) {
+      insights.push({
+        id: "fully-booked",
+        tone: "warn",
+        title: "Fully booked",
+        detail: `Only your events fit for the rest of the day. There is no free time before ${formatTime(windowEnd)}.`,
+        hint: "Move something to make room if you still need to work.",
+      });
+    } else {
+      if (capacity >= 0.7) {
+        insights.push({
+          id: "tight",
+          tone: "warn",
+          title: "Meetings dominate the day",
+          detail: `Events take ${Math.round(capacity * 100)}% of your remaining window (${formatHM(busyMs)} of ${formatHM(remainingWindowMs)}).`,
+        });
+      }
+      if (longestGapMs < 45 * 60_000 && freeGaps.length > 1) {
+        insights.push({
+          id: "fragmented",
+          tone: "info",
+          title: "Fragmented day",
+          detail: `Free time is split into ${freeGaps.length} short gaps, the longest under 45 minutes.`,
+          hint: "Treat the small gaps as buffer, not work time.",
+        });
+      }
+    }
+  }
+
+  // R5 — back-to-back meetings
+  {
+    const sortedBusy = busyFromNow.slice().sort((a, b) => a.start - b.start);
+    let chained = 0;
+    for (let i = 0; i < sortedBusy.length - 1; i++) {
+      const current = sortedBusy[i];
+      const next = sortedBusy[i + 1];
+      if (current && next && next.start - current.end <= 10 * 60_000) chained++;
+    }
+    if (chained >= 2) {
+      insights.push({
+        id: "back-to-back",
+        tone: "warn",
+        title: "Back-to-back meetings",
+        detail: `${chained} back-to-back joins with 10 minutes or less between them.`,
+        hint: "Protect a break between blocks so you can reset.",
+      });
+    }
+  }
+
+  // R6 — free time for other things
+  if (remainingWindowMs > 0 && freeMs >= 30 * 60_000) {
+    insights.push({
+      id: "free-time",
+      tone: "good",
+      title: "Free time available",
+      detail: `${formatHM(freeMs)} of your window is unbooked — plenty of room for other things.`,
+    });
+  }
+
+  // R7 — deep-work window
+  if (longestGapMs >= 90 * 60_000 && freeGaps.length > 0) {
+    const best = freeGaps.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a));
+    insights.push({
+      id: "deep-work",
+      tone: "good",
+      title: "Deep-work window",
+      detail: `Best focus block: ${formatTime(best.start)} to ${formatTime(best.end)} (${formatHM(best.end - best.start)}).`,
+    });
+  }
+
+  // R8 — pace vs the daily goal
+  if (budget.isRequiredDay && budget.goalMs > 0) {
+    const doneMs = budget.trackedMs + budget.workEventsDoneMs + budget.plannedMs;
+    const windowLength = window.end - window.start;
+    const fraction = windowLength <= 0 ? 1 : Math.max(0, Math.min(1, (args.now - window.start) / windowLength));
+    const expected = budget.goalMs * fraction;
+    const delta = doneMs - expected;
+    if (delta >= 60 * 60_000) {
+      insights.push({
+        id: "ahead",
+        tone: "good",
+        title: "Ahead of pace",
+        detail: `${formatHM(delta)} ahead of where you need to be for this time of day.`,
+      });
+    } else if (delta <= -60 * 60_000) {
+      insights.push({
+        id: "behind",
+        tone: "warn",
+        title: "Behind pace",
+        detail: `${formatHM(-delta)} behind where you need to be for this time of day.`,
+        hint: "Block a chunk of the free time you have left.",
+      });
+    }
+  }
+
+  // R9 — goal cannot be covered
+  if (budget.overbooked) {
+    insights.push({
+      id: "overbooked",
+      tone: "critical",
+      title: "Not enough time left",
+      detail: `You are ${formatHM(budget.remainingMs - budget.freeLeftMs)} short of your goal before the day ends.`,
+      hint: "Reschedule a meeting or accept the shortfall today.",
+    });
+  }
+
+  // R10 — backlog pressure
+  if ((args.backlogHours ?? 0) > 0 && freeMs > 0) {
+    insights.push({
+      id: "backlog",
+      tone: "info",
+      title: "Backlog",
+      detail: `You carry ${formatHM(args.backlogHours! * 3600_000)} of backlog. Today's free time can cover ${formatHM(freeMs)}.`,
+    });
+  }
+
+  // R11 — monthly pacing
+  if ((args.perDayNeededHours ?? 0) > 0) {
+    const pph = args.perDayNeededHours!;
+    const perDayMs = pph * 3600_000;
+    insights.push({
+      id: "monthly",
+      tone: perDayMs > freeMs ? "warn" : "info",
+      title: "Monthly pacing",
+      detail:
+        perDayMs > freeMs
+          ? `You need ${pph.toFixed(1)}h/day this month, but only ${formatHM(freeMs)} is free today.`
+          : `You need ${pph.toFixed(1)}h/day this month. Today's ${formatHM(freeMs)} of free time covers it.`,
+    });
+  }
+
+  // R12 — habit nags
+  if (budget.isRequiredDay && remainingWindowMs > 0 && budget.trackedMs === 0 && budget.plannedMs === 0) {
+    insights.push({
+      id: "nothing-logged",
+      tone: "warn",
+      title: "Nothing logged yet",
+      detail: `No time tracked and nothing scheduled so far on a required day.`,
+      hint: "Start the timer or log what you already did.",
+    });
+  }
+
+  const toneRank: Record<InsightTone, number> = { critical: 0, warn: 1, info: 2, good: 3 };
+  insights.sort((a, b) => toneRank[a.tone] - toneRank[b.tone]);
+
+  const tone: InsightTone = insights[0]?.tone ?? "good";
+
+  return { insights, tone, longestGapMs, facts };
 }
 
 /** Assign side-by-side columns to overlapping events (Outlook style). */

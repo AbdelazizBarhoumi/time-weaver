@@ -3,6 +3,7 @@
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CalendarAccountController;
 use App\Http\Controllers\CalendarEventController;
+use App\Http\Controllers\CalendarInsightController;
 use App\Http\Controllers\CalendarSettingsController;
 use App\Http\Controllers\DayOffController;
 use App\Http\Controllers\FocusBlockController;
@@ -55,6 +56,10 @@ Route::middleware('auth:web')->group(function () {
     Route::post('calendar/focus-blocks', [FocusBlockController::class, 'store']);
     Route::put('calendar/focus-blocks/{block}', [FocusBlockController::class, 'update']);
     Route::delete('calendar/focus-blocks/{block}', [FocusBlockController::class, 'destroy']);
+
+    // Calendar: day intelligence + optional AI coach
+    Route::get('calendar/coach/status', [CalendarInsightController::class, 'status']);
+    Route::post('calendar/coach', [CalendarInsightController::class, 'coach']);
 
     // Debug route
     Route::get('/debug-policy', function () {
