@@ -5,10 +5,24 @@ import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronRight, Circle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-
-const DropdownMenu = DropdownMenuPrimitive.Root;
+import { menuContentGuards } from "@/components/ui/menu-guards";
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
+
+/**
+ * Non-modal by default.
+ *
+ * Radix marks modal layers by setting `document.body.style.pointerEvents = "none"`
+ * and only lifting it once its internal layer set empties. Opening a modal dialog
+ * from a modal menu (both of which we do here) makes those two bookkeeping passes
+ * race, and the page can stay stuck at `pointer-events: none` — the UI looks frozen
+ * until a reload. Menus only ever open dialogs, confirmations or navigation, so they
+ * never need to hold the page's pointer-events lock themselves.
+ */
+const DropdownMenu = (props: React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Root>) => (
+  <DropdownMenuPrimitive.Root modal={false} {...props} />
+);
+DropdownMenu.displayName = "DropdownMenu";
 
 const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 
@@ -50,6 +64,7 @@ const DropdownMenuSubContent = React.forwardRef<
       className,
     )}
     {...props}
+    {...menuContentGuards}
   />
 ));
 DropdownMenuSubContent.displayName = DropdownMenuPrimitive.SubContent.displayName;
@@ -68,6 +83,7 @@ const DropdownMenuContent = React.forwardRef<
         className,
       )}
       {...props}
+      {...menuContentGuards}
     />
   </DropdownMenuPrimitive.Portal>
 ));

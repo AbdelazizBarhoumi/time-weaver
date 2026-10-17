@@ -3,8 +3,17 @@ import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import { Check, ChevronRight, Circle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { menuContentGuards } from "@/components/ui/menu-guards";
 
-const ContextMenu = ContextMenuPrimitive.Root;
+/**
+ * Non-modal by default — see the note in `dropdown-menu.tsx`. A context menu that
+ * opens a dialog while holding the page's pointer-events lock can leave the whole
+ * UI unclickable until a reload.
+ */
+const ContextMenu = (props: React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Root>) => (
+  <ContextMenuPrimitive.Root modal={false} {...props} />
+);
+ContextMenu.displayName = "ContextMenu";
 
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
 
@@ -48,6 +57,7 @@ const ContextMenuSubContent = React.forwardRef<
       className,
     )}
     {...props}
+    {...menuContentGuards}
   />
 ));
 ContextMenuSubContent.displayName = ContextMenuPrimitive.SubContent.displayName;
@@ -64,6 +74,7 @@ const ContextMenuContent = React.forwardRef<
         className,
       )}
       {...props}
+      {...menuContentGuards}
     />
   </ContextMenuPrimitive.Portal>
 ));

@@ -314,9 +314,11 @@ export function computeStats(sessions: WorkSession[], now: number = Date.now()):
     if (ms > 0) activeDays++;
     if (ms > best) best = ms;
   }
-  // Backlog against the 8h/day goal: elapsed working days (Mon–Fri) from the first
-  // session through today, minus all hours worked. Overtime and work on off-days
+  // Backlog against the 8h/day goal: elapsed *required* working days from the
+  // first session through today, minus all hours worked. Overtime and weekend work
   // reduce it (the client has no day-off data), and it never goes below zero.
+  // This is an offline helper only — the dashboard uses the server's /sessions/stats,
+  // which also respects the user's configured required days; this assumes Mon–Fri.
   let backlogMs = 0;
   if (sessions.length > 0) {
     const first = new Date(Math.min(...sessions.map(s => new Date(s.start).getTime())));
@@ -343,15 +345,15 @@ export interface MonthStats {
   /** e.g. "October 2026" */
   label: string;
   doneHours: number;
-  /** DAILY_GOAL_HOURS × working days in month */
+  /** DAILY_GOAL_HOURS × required days in month */
   targetHours: number;
   /** target − done, floored at 0 */
   remainingHours: number;
-  /** working days left in the month, today included */
+  /** required days left in the month, today included */
   daysLeft: number;
   /** remainingHours ÷ daysLeft (0 when the month is over) */
   perDayNeeded: number;
-  /** done − (DAILY_GOAL_HOURS × working days elapsed, today included); negative = behind */
+  /** done − (DAILY_GOAL_HOURS × required days elapsed, today included); negative = behind */
   paceDeltaHours: number;
   /** done / target, 0–1 (clamped for display) */
   progress: number;

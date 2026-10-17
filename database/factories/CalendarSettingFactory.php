@@ -21,6 +21,7 @@ class CalendarSettingFactory extends Factory
             'work_end' => '22:00',
             'work_keywords' => ['standup', 'client', 'sprint', 'review', 'sync'],
             'work_days' => CalendarSetting::DEFAULT_WORK_DAYS,
+            'required_days' => CalendarSetting::DEFAULT_WORK_DAYS,
         ];
     }
 }

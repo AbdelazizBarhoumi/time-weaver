@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: CalendarSettings = {
   workEnd: "22:00",
   workKeywords: [],
   workDays: [1, 2, 3, 4, 5],
+  requiredDays: [1, 2, 3, 4, 5],
 };
 
 /**
@@ -90,14 +91,16 @@ export function TodayPlanCard() {
           <div>
             <div className="font-mono text-[11px] uppercase tracking-wider text-mut">Remaining today</div>
             <div className="mt-1 text-3xl font-semibold text-neon">
-              {budget.isWorkDay ? formatHM(budget.remainingMs) : "—"}
+              {budget.isRequiredDay ? formatHM(budget.remainingMs) : "—"}
             </div>
             <div className="mt-1 font-mono text-[11px] text-mut">
-              {budget.isWorkDay
+              {budget.isRequiredDay
                 ? budget.remainingMs === 0
                   ? "Goal covered"
                   : `${formatHM(budget.freeLeftMs)} of free time left`
-                : "Not a working day"}
+                : budget.isWorkDay
+                  ? "Optional day"
+                  : "Day off"}
             </div>
           </div>
 

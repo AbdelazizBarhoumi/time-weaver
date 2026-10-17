@@ -6,11 +6,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CalendarView, type CalendarDensity } from "@/components/CalendarView";
 import { MonthView } from "@/components/MonthView";
-import { AccountsCard, BudgetCard, Legend, SettingsCard } from "@/components/CalendarSidebar";
+import { AccountsCard, BudgetCard, Legend, SettingsCard, WorkableTimeCard } from "@/components/CalendarSidebar";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import {
   addDays,
   computeDayBudget,
+  computeWorkableTimeLeft,
   isWorkDay,
   relativeTime,
   sameDay,
@@ -63,6 +64,7 @@ const DEFAULT_SETTINGS: CalendarSettings = {
   workEnd: "22:00",
   workKeywords: [],
   workDays: [1, 2, 3, 4, 5],
+  requiredDays: [1, 2, 3, 4, 5],
 };
 
 // The ".v2" suffix retires the older default of "work"; the calendar now opens
@@ -195,6 +197,12 @@ function CalendarPage() {
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [events, focusBlocks, settings, now, sessions],
+  );
+
+  const workable = useMemo(
+    () => computeWorkableTimeLeft({ day: todayStart, now, events, settings }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [events, settings, now],
   );
 
   const summaries: DaySummary[] = useMemo(() => {
@@ -333,7 +341,7 @@ function CalendarPage() {
         <span className="hidden items-center gap-2 font-mono text-xs text-mut sm:flex">
           <span className="inline-block h-2 w-2 rounded-full bg-neon" />
           {formatTime(new Date(now).toISOString())}
-          {budget.isWorkDay && budget.remainingMs > 0 && <span className="text-neon">{formatHM(budget.remainingMs)} left</span>}
+          {budget.isRequiredDay && budget.remainingMs > 0 && <span className="text-neon">{formatHM(budget.remainingMs)} left</span>}
         </span>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => step(-1)} aria-label="Previous">
@@ -421,7 +429,7 @@ function CalendarPage() {
                 events={events}
                 focusBlocks={focusBlocks}
                 sessions={calendarSessions}
-                todaySlots={budget.isWorkDay ? budget.slots : []}
+                todaySlots={budget.isRequiredDay ? budget.slots : []}
                 density={density}
                 summaries={summaries}
                 onToggleWork={(e) => onToggleWork(e)}
@@ -468,6 +476,7 @@ function CalendarPage() {
         </div>
 
         <aside className="min-h-0 space-y-4 lg:overflow-y-auto lg:pr-1">
+          <WorkableTimeCard workable={workable} />
           <BudgetCard budget={budget} />
           <AccountsCard
             accounts={accounts.data ?? []}

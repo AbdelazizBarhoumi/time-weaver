@@ -23,6 +23,8 @@ class CalendarSettingsController extends Controller
             'work_keywords.*' => 'string|max:60',
             'work_days' => 'sometimes|array|max:7',
             'work_days.*' => 'integer|between:0,6',
+            'required_days' => 'sometimes|array|max:7',
+            'required_days.*' => 'integer|between:0,6',
         ]);
 
         if ($this->toMinutes($data['work_end']) <= $this->toMinutes($data['work_start'])) {
@@ -32,11 +34,21 @@ class CalendarSettingsController extends Controller
         }
 
         $settings = CalendarSetting::forUser($request->user());
+        $workDays = $this->normalizeDays($data['work_days'] ?? null, $settings->workDays());
+
+        // A day can only be *required* if it is also workable, and dropping a day
+        // from the working week must drop it from the required week too.
+        $requiredDays = array_values(array_intersect(
+            $this->normalizeDays($data['required_days'] ?? null, $settings->requiredDays()),
+            $workDays,
+        ));
+
         $settings->update([
             'work_start' => $data['work_start'],
             'work_end' => $data['work_end'],
             'work_keywords' => array_values(array_filter(array_map('trim', $data['work_keywords'] ?? []))),
-            'work_days' => $this->normalizeWorkDays($data['work_days'] ?? null, $settings),
+            'work_days' => $workDays,
+            'required_days' => $requiredDays,
         ]);
 
         return response()->json($settings->toApi());
@@ -53,16 +65,17 @@ class CalendarSettingsController extends Controller
     }
 
     /**
-     * @param  array<int, mixed>|null  $workDays
+     * @param  array<int, mixed>|null  $days
+     * @param  array<int, int>  $fallback
      * @return array<int, int>
      */
-    private function normalizeWorkDays(?array $workDays, CalendarSetting $settings): array
+    private function normalizeDays(?array $days, array $fallback): array
     {
-        if ($workDays === null) {
-            return $settings->workDays();
+        if ($days === null) {
+            return $fallback;
         }
 
-        $days = array_values(array_unique(array_map('intval', $workDays)));
+        $days = array_values(array_unique(array_map('intval', $days)));
         sort($days);
 
         return $days;

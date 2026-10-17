@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\CalendarSetting;
 use App\Models\User;
 use App\Models\UserDayOff;
 use App\Models\WorkSession;
@@ -235,6 +236,64 @@ class WorkSessionApiTest extends TestCase
         // Worked = 9h (Mon) + 2h (off-day) = 11h → backlog 5h.
         $response->assertStatus(200)
             ->assertJsonPath('backlogHours', 5);
+    }
+
+    public function test_stats_backlog_does_not_require_a_workable_weekend_but_credits_its_hours(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-05 17:00:00')); // Monday
+
+        CalendarSetting::factory()->create([
+            'user_id' => $this->user->id,
+            // Weekends can be worked, but only weekdays are required.
+            'work_days' => [0, 1, 2, 3, 4, 5, 6],
+            'required_days' => [1, 2, 3, 4, 5],
+        ]);
+
+        WorkSession::factory()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-03 09:00:00'), // Saturday
+            'end' => Carbon::parse('2026-10-03 12:00:00'), // 3h of weekend work
+        ]);
+        WorkSession::factory()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-05 09:00:00'), // Monday
+            'end' => Carbon::parse('2026-10-05 17:00:00'), // 8h
+        ]);
+
+        // Only Monday is required (8h) and 11h were worked, so nothing is owed.
+        // The Saturday would have added a full 8h of debt under the old rules.
+        $response = $this->getJson('/api/sessions/stats');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('backlogHours', 0);
+    }
+
+    public function test_stats_backlog_requires_weekends_when_they_are_marked_required(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-05 17:00:00')); // Monday
+
+        CalendarSetting::factory()->create([
+            'user_id' => $this->user->id,
+            'work_days' => [0, 1, 2, 3, 4, 5, 6],
+            'required_days' => [0, 1, 2, 3, 4, 5, 6],
+        ]);
+
+        WorkSession::factory()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-03 09:00:00'), // Saturday
+            'end' => Carbon::parse('2026-10-03 12:00:00'), // 3h
+        ]);
+        WorkSession::factory()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-05 09:00:00'), // Monday
+            'end' => Carbon::parse('2026-10-05 17:00:00'), // 8h
+        ]);
+
+        // Sat + Sun + Mon required = 24h target, 11h worked → 13h backlog.
+        $response = $this->getJson('/api/sessions/stats');
+
+        $response->assertStatus(200)
+            ->assertJsonPath('backlogHours', 13);
     }
 
     public function test_can_get_monthly_breakdown(): void

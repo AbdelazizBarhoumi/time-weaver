@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   computeDayBudget,
+  computeWorkableTimeLeft,
   freeIntervals,
+  isRequiredDay,
   isWorkDay,
   mergeIntervals,
   monthGrid,
@@ -27,6 +29,7 @@ const settings: CalendarSettings = {
   workEnd: "17:00",
   workKeywords: [],
   workDays: [1, 2, 3, 4, 5],
+  requiredDays: [1, 2, 3, 4, 5],
 };
 
 /** Wednesday */
@@ -78,6 +81,25 @@ describe("isWorkDay", () => {
     const empty: CalendarSettings = { ...settings, workDays: [] };
     expect(isWorkDay(wednesday, empty)).toBe(true);
     expect(isWorkDay(saturday, empty)).toBe(false);
+  });
+});
+
+describe("isRequiredDay", () => {
+  it("marks configured required weekdays", () => {
+    expect(isRequiredDay(wednesday, settings)).toBe(true);
+    expect(isRequiredDay(saturday, settings)).toBe(false);
+  });
+
+  it("does not require a day that is only workable", () => {
+    const optionalWeekend: CalendarSettings = { ...settings, workDays: [0, 1, 2, 3, 4, 5, 6] };
+    expect(isWorkDay(saturday, optionalWeekend)).toBe(true);
+    expect(isRequiredDay(saturday, optionalWeekend)).toBe(false);
+  });
+
+  it("falls back to Monday–Friday when no required days are set", () => {
+    const empty: CalendarSettings = { ...settings, requiredDays: [] };
+    expect(isRequiredDay(wednesday, empty)).toBe(true);
+    expect(isRequiredDay(saturday, empty)).toBe(false);
   });
 });
 
@@ -171,8 +193,28 @@ describe("computeDayBudget", () => {
   it("has a zero goal and nothing remaining on a non-working day", () => {
     const budget = computeDayBudget({ day: saturday, now: noon, events: [], focusBlocks: [], settings });
     expect(budget.isWorkDay).toBe(false);
+    expect(budget.isRequiredDay).toBe(false);
     expect(budget.goalMs).toBe(0);
     expect(budget.remainingMs).toBe(0);
+  });
+
+  it("owes nothing on a workable-but-optional day, yet still credits tracked time", () => {
+    const optionalWeekend: CalendarSettings = { ...settings, workDays: [0, 6] };
+    const tracked = [{ start: new Date(at(saturday, 9)).getTime(), end: new Date(at(saturday, 10)).getTime() }];
+    const budget = computeDayBudget({
+      day: saturday,
+      now: noon,
+      events: [],
+      focusBlocks: [],
+      settings: optionalWeekend,
+      trackedIntervals: tracked,
+    });
+
+    expect(budget.isWorkDay).toBe(true);
+    expect(budget.isRequiredDay).toBe(false);
+    expect(budget.goalMs).toBe(0);
+    expect(budget.remainingMs).toBe(0);
+    expect(budget.trackedMs).toBe(3_600_000);
   });
 
   it("suggests free gaps large enough to fit the remaining hours", () => {
@@ -180,6 +222,85 @@ describe("computeDayBudget", () => {
     // Noon to 17:00 is free, so the remaining target should be suggested there.
     expect(budget.remainingMs).toBe(8 * 3_600_000);
     expect(budget.slots.some((s) => s.suggested)).toBe(true);
+  });
+});
+
+describe("computeWorkableTimeLeft", () => {
+  const noon = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 12, 0).getTime();
+
+  it("counts the whole window when nothing is on the calendar", () => {
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [], settings });
+    // Noon → 17:00.
+    expect(workable.windowMs).toBe(5 * 3_600_000);
+    expect(workable.busyMs).toBe(0);
+    expect(workable.remainingMs).toBe(5 * 3_600_000);
+  });
+
+  it("subtracts a non-work event that falls inside the window", () => {
+    const event = makeEvent({ start: at(wednesday, 13), end: at(wednesday, 15) });
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [event], settings });
+    expect(workable.busyMs).toBe(2 * 3_600_000);
+    expect(workable.remainingMs).toBe(3 * 3_600_000);
+  });
+
+  it("clips an event that started before now", () => {
+    const event = makeEvent({ start: at(wednesday, 11), end: at(wednesday, 13) });
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [event], settings });
+    expect(workable.busyMs).toBe(3_600_000);
+    expect(workable.remainingMs).toBe(4 * 3_600_000);
+  });
+
+  it("clips an event that runs past the end of the working day", () => {
+    const event = makeEvent({ start: at(wednesday, 16), end: at(wednesday, 19) });
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [event], settings });
+    expect(workable.busyMs).toBe(3_600_000);
+    expect(workable.remainingMs).toBe(4 * 3_600_000);
+  });
+
+  it("does not double count overlapping events", () => {
+    const events = [
+      makeEvent({ start: at(wednesday, 13), end: at(wednesday, 14, 30) }),
+      makeEvent({ start: at(wednesday, 14), end: at(wednesday, 15) }),
+    ];
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events, settings });
+    expect(workable.busyMs).toBe(2 * 3_600_000);
+    expect(workable.remainingMs).toBe(3 * 3_600_000);
+  });
+
+  it("ignores work events and all-day events", () => {
+    const events = [
+      makeEvent({ isWork: true, start: at(wednesday, 13), end: at(wednesday, 15) }),
+      makeEvent({ allDay: true, start: at(wednesday, 0), end: at(wednesday, 23) }),
+    ];
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events, settings });
+    expect(workable.busyMs).toBe(0);
+    expect(workable.remainingMs).toBe(5 * 3_600_000);
+  });
+
+  it("clamps to zero when events fill the rest of the day", () => {
+    const event = makeEvent({ start: at(wednesday, 12), end: at(wednesday, 17) });
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [event], settings });
+    expect(workable.remainingMs).toBe(0);
+  });
+
+  it("starts the countdown at the work-start when it is still early", () => {
+    const early = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 7).getTime();
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: early, events: [], settings });
+    expect(workable.windowStartMs).toBe(new Date(at(wednesday, 9)).getTime());
+    expect(workable.windowMs).toBe(8 * 3_600_000);
+  });
+
+  it("returns an empty window once the working day is over", () => {
+    const late = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 18).getTime();
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: late, events: [], settings });
+    expect(workable.windowMs).toBe(0);
+    expect(workable.remainingMs).toBe(0);
+  });
+
+  it("flags non-working days", () => {
+    const workable = computeWorkableTimeLeft({ day: saturday, now: noon, events: [], settings });
+    expect(workable.isWorkDay).toBe(false);
+    expect(workable.isRequiredDay).toBe(false);
   });
 });
 
@@ -216,8 +337,29 @@ describe("summarizeDay", () => {
   it("gives no goal on a day off", () => {
     const summary = summarizeDay({ day: saturday, events: [], focusBlocks: [], trackedIntervals: [], settings });
     expect(summary.isWorkDay).toBe(false);
+    expect(summary.isRequiredDay).toBe(false);
     expect(summary.goalMs).toBe(0);
     expect(summary.remainingMs).toBe(0);
+  });
+
+  it("counts weekend work on an optional day without a goal", () => {
+    const optionalWeekend: CalendarSettings = { ...settings, workDays: [0, 6] };
+    const summary = summarizeDay({
+      day: saturday,
+      events: [],
+      focusBlocks: [],
+      trackedIntervals: [
+        { start: new Date(at(saturday, 9)).getTime(), end: new Date(at(saturday, 11)).getTime() },
+      ],
+      settings: optionalWeekend,
+    });
+
+    expect(summary.isWorkDay).toBe(true);
+    expect(summary.isRequiredDay).toBe(false);
+    expect(summary.goalMs).toBe(0);
+    expect(summary.doneMs).toBe(2 * 3_600_000);
+    expect(summary.remainingMs).toBe(0);
+    expect(summary.progress).toBe(0);
   });
 });
 

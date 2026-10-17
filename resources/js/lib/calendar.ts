@@ -95,8 +95,10 @@ export interface CalendarSettings {
   workStart: string;
   workEnd: string;
   workKeywords: string[];
-  /** Working days of the week, 0 = Sunday … 6 = Saturday */
+  /** Days the user *can* work, 0 = Sunday … 6 = Saturday. A day here is not a day off. */
   workDays: number[];
+  /** Days the user *must* work. These drive the 8h/day goal and the monthly target. */
+  requiredDays: number[];
 }
 
 export interface FocusBlock {
@@ -113,6 +115,9 @@ export interface Interval {
 
 /** Sunday = 0 … Saturday = 6 */
 export const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5];
+
+/** Default compulsory week; used when a legacy payload omits `requiredDays`. */
+export const DEFAULT_REQUIRED_DAYS = DEFAULT_WORK_DAYS;
 
 export const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
@@ -172,6 +177,7 @@ export const calendarApi = {
         work_end: s.workEnd,
         work_keywords: s.workKeywords,
         work_days: s.workDays,
+        required_days: s.requiredDays,
       })
       .then((r) => r.data),
   focusBlocks: (from: string, to: string) =>
@@ -286,6 +292,15 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
 /** Whether a date is one of the user's configured working days. */
 export function isWorkDay(day: Date, settings: CalendarSettings): boolean {
   const days = settings.workDays?.length ? settings.workDays : DEFAULT_WORK_DAYS;
+  return days.includes(day.getDay());
+}
+
+/**
+ * Whether a date is a day the user is *obliged* to work. Only these days build up
+ * the daily goal; a day the user can work but isn't required on never demands hours.
+ */
+export function isRequiredDay(day: Date, settings: CalendarSettings): boolean {
+  const days = settings.requiredDays?.length ? settings.requiredDays : DEFAULT_REQUIRED_DAYS;
   return days.includes(day.getDay());
 }
 
@@ -446,7 +461,10 @@ export interface DayBudget {
   freeLeftMs: number;
   overbooked: boolean;
   slots: SuggestedSlot[];
+  /** The user can work this day (it is not a day off). */
   isWorkDay: boolean;
+  /** The user is obliged to work this day; only then is there a goal. */
+  isRequiredDay: boolean;
 }
 
 /**
@@ -469,7 +487,8 @@ export function computeDayBudget(args: {
   const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
   const minSlot = args.minSlotMs ?? 15 * 60_000;
   const working = isWorkDay(day, settings);
-  const goalMs = working ? goalHours * 3600_000 : 0;
+  const required = isRequiredDay(day, settings);
+  const goalMs = required ? goalHours * 3600_000 : 0;
 
   const dayIv = dayInterval(day);
   const tracked = mergeIntervals(args.trackedIntervals ?? [])
@@ -536,11 +555,78 @@ export function computeDayBudget(args: {
     overbooked: remainingMs > freeLeftMs,
     slots,
     isWorkDay: working,
+    isRequiredDay: required,
+  };
+}
+
+export interface WorkableTimeLeft {
+  /** `max(now, work-window start)` — where the countdown begins. */
+  windowStartMs: number;
+  /** Work-window end (`workEnd` setting) for this day. */
+  windowEndMs: number;
+  /** Total length of the remaining work window. */
+  windowMs: number;
+  /** Non-work event time inside the window (overlaps merged, never double counted). */
+  busyMs: number;
+  /** `windowMs − busyMs`, clamped at 0: how long you can still work today. */
+  remainingMs: number;
+  isWorkDay: boolean;
+  isRequiredDay: boolean;
+}
+
+/**
+ * How much time the user can still work today: from `now` until the configured
+ * work end, minus every non-work calendar event in between. Work-tagged events
+ * are skipped on purpose — during those the user is already working — and
+ * all-day events never block time, matching `computeDayBudget`.
+ */
+export function computeWorkableTimeLeft(args: {
+  day: Date;
+  now: number;
+  events: CalendarEvent[];
+  settings: CalendarSettings;
+}): WorkableTimeLeft {
+  const { day, now, events, settings } = args;
+  const working = isWorkDay(day, settings);
+  const required = isRequiredDay(day, settings);
+
+  const window = workWindow(day, settings);
+  const start = Math.max(window.start, now);
+  if (start >= window.end) {
+    return {
+      windowStartMs: start,
+      windowEndMs: window.end,
+      windowMs: 0,
+      busyMs: 0,
+      remainingMs: 0,
+      isWorkDay: working,
+      isRequiredDay: required,
+    };
+  }
+
+  const remainingWindow: Interval = { start, end: window.end };
+  const busy = clipAll(
+    events.filter((e) => !e.allDay && !e.isWork).map(eventInterval),
+    remainingWindow,
+  );
+  const busyMs = totalMs(busy);
+
+  return {
+    windowStartMs: start,
+    windowEndMs: window.end,
+    windowMs: window.end - start,
+    busyMs,
+    remainingMs: Math.max(0, window.end - start - busyMs),
+    isWorkDay: working,
+    isRequiredDay: required,
   };
 }
 
 export interface DaySummary {
+  /** The user can work this day (it is not a day off). */
   isWorkDay: boolean;
+  /** The user is obliged to work this day; only then is there a goal. */
+  isRequiredDay: boolean;
   goalMs: number;
   /** Tracked sessions + work events (deduplicated) */
   doneMs: number;
@@ -560,7 +646,8 @@ export function summarizeDay(args: {
 }): DaySummary {
   const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
   const working = isWorkDay(args.day, args.settings);
-  const goalMs = working ? goalHours * 3600_000 : 0;
+  const required = isRequiredDay(args.day, args.settings);
+  const goalMs = required ? goalHours * 3600_000 : 0;
   const dayIv = dayInterval(args.day);
 
   const tracked = mergeIntervals(args.trackedIntervals)
@@ -580,6 +667,7 @@ export function summarizeDay(args: {
 
   return {
     isWorkDay: working,
+    isRequiredDay: required,
     goalMs,
     doneMs,
     trackedMs,

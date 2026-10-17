@@ -12,8 +12,41 @@ import {
   type CalendarAccount,
   type CalendarSettings,
   type DayBudget,
+  type WorkableTimeLeft,
 } from "@/lib/calendar";
-import { formatHM } from "@/lib/tracker";
+import { formatHM, formatHMS, formatTime } from "@/lib/tracker";
+
+/** Live countdown: how long you can still work today, from now until work end. */
+export function WorkableTimeCard({ workable }: { workable: WorkableTimeLeft }) {
+  const dayOver = workable.remainingMs === 0 && workable.windowMs === 0;
+  return (
+    <div className="rounded-lg border border-line bg-panel p-4">
+      <div className="font-mono text-[11px] uppercase tracking-widest text-mut">Time left to work today</div>
+      <div className="mt-2 font-mono text-3xl font-semibold text-neon">
+        {workable.isWorkDay ? formatHMS(workable.remainingMs) : "—"}
+      </div>
+      <dl className="mt-3 grid grid-cols-2 gap-y-1.5 font-mono text-xs">
+        <dt className="text-mut">Until work ends</dt>
+        <dd className="text-right text-ink">{formatTime(new Date(workable.windowEndMs).toISOString())}</dd>
+        <dt className="text-mut">Remaining window</dt>
+        <dd className="text-right text-ink">{formatHM(workable.windowMs)}</dd>
+        <dt className="text-mut">Taken by events</dt>
+        <dd className="text-right text-l3">{formatHM(workable.busyMs)}</dd>
+      </dl>
+      <p className="mt-3 text-xs text-mut">
+        {!workable.isWorkDay
+          ? "Today is a day off."
+          : dayOver
+            ? "Your working window is over for today."
+            : workable.busyMs === 0
+              ? "Nothing on the calendar — the whole window is yours."
+              : workable.remainingMs === 0
+                ? "Meetings fill the rest of your day."
+                : "Meetings are already subtracted; the rest is yours to work."}
+      </p>
+    </div>
+  );
+}
 
 export function BudgetCard({ budget }: { budget: DayBudget }) {
   const done = budget.trackedMs + budget.workEventsDoneMs;
@@ -39,12 +72,14 @@ export function BudgetCard({ budget }: { budget: DayBudget }) {
       </dl>
       <p className="mt-3 text-xs text-mut">
         {!budget.isWorkDay
-          ? "Today is not a working day."
-          : budget.remainingMs === 0
-            ? "Your hours are covered for today."
-            : budget.overbooked
-              ? `Not enough free time: you are ${formatHM(budget.remainingMs - budget.freeLeftMs)} short before your day ends.`
-              : "Green dashed gaps on the calendar show where your remaining hours fit."}
+          ? "Today is a day off."
+          : !budget.isRequiredDay
+            ? "Today is optional — nothing is owed, and anything you track counts as extra."
+            : budget.remainingMs === 0
+              ? "Your hours are covered for today."
+              : budget.overbooked
+                ? `Not enough free time: you are ${formatHM(budget.remainingMs - budget.freeLeftMs)} short before your day ends.`
+                : "Green dashed gaps on the calendar show where your remaining hours fit."}
       </p>
     </div>
   );
@@ -218,18 +253,37 @@ export function SettingsCard({ settings }: { settings: CalendarSettings }) {
   const [end, setEnd] = useState(settings.workEnd);
   const [keywords, setKeywords] = useState(settings.workKeywords.join(", "));
   const [workDays, setWorkDays] = useState<number[]>(settings.workDays);
+  const [requiredDays, setRequiredDays] = useState<number[]>(settings.requiredDays);
 
   useEffect(() => {
     setStart(settings.workStart);
     setEnd(settings.workEnd);
     setKeywords(settings.workKeywords.join(", "));
     setWorkDays(settings.workDays);
+    setRequiredDays(settings.requiredDays);
   }, [settings]);
 
   const invalid = end <= start;
 
-  const toggleDay = (day: number) =>
-    setWorkDays((days) => (days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort()));
+  const sorted = (days: number[]) => [...days].sort((a, b) => a - b);
+
+  const toggleDay = (day: number) => {
+    const next = workDays.includes(day) ? workDays.filter((d) => d !== day) : sorted([...workDays, day]);
+    setWorkDays(next);
+    // A day you cannot work cannot be required either.
+    if (!next.includes(day)) {
+      setRequiredDays((req) => req.filter((d) => d !== day));
+    }
+  };
+
+  const toggleRequired = (day: number) => {
+    const next = requiredDays.includes(day) ? requiredDays.filter((d) => d !== day) : sorted([...requiredDays, day]);
+    setRequiredDays(next);
+    // Requiring a day implies you can work it.
+    if (next.includes(day) && !workDays.includes(day)) {
+      setWorkDays(sorted([...workDays, day]));
+    }
+  };
 
   return (
     <div className="rounded-lg border border-line bg-panel p-4">
@@ -261,7 +315,7 @@ export function SettingsCard({ settings }: { settings: CalendarSettings }) {
               onClick={() => toggleDay(day)}
               className={cn(
                 "rounded border py-1 font-mono text-[11px] transition",
-                active ? "border-neon bg-neon/15 text-neon" : "border-line text-mut hover:text-ink",
+                active ? "border-neon/60 bg-neon/10 text-neon" : "border-line text-mut hover:text-ink",
               )}
             >
               {label}
@@ -269,6 +323,37 @@ export function SettingsCard({ settings }: { settings: CalendarSettings }) {
           );
         })}
       </div>
+
+      <div className="mt-4 font-mono text-[11px] uppercase tracking-widest text-mut">Required days</div>
+      <div className="mt-2 grid grid-cols-7 gap-1">
+        {WEEKDAY_LABELS.map((label, day) => {
+          const canWork = workDays.includes(day);
+          const required = requiredDays.includes(day);
+          return (
+            <button
+              key={label}
+              type="button"
+              disabled={!canWork}
+              onClick={() => toggleRequired(day)}
+              title={canWork ? undefined : "Make it a working day first"}
+              className={cn(
+                "rounded border py-1 font-mono text-[11px] transition",
+                !canWork
+                  ? "cursor-not-allowed border-line/40 text-mut/40"
+                  : required
+                    ? "border-neon bg-neon font-semibold text-void"
+                    : "border-line text-mut hover:text-ink",
+              )}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] leading-snug text-mut">
+        Required days build up the 8h/day backlog and monthly target. Days you can work but don&apos;t require never
+        ask for hours — work on them simply counts.
+      </p>
 
       <label className="mt-4 block font-mono text-[11px] uppercase tracking-widest text-mut">Auto-work keywords</label>
       <input
@@ -283,7 +368,15 @@ export function SettingsCard({ settings }: { settings: CalendarSettings }) {
         size="sm"
         className="mt-3 w-full"
         disabled={invalid}
-        onClick={() => void save.mutateAsync({ workStart: start, workEnd: end, workKeywords: keywords.split(",").map((k) => k.trim()).filter(Boolean), workDays })}
+        onClick={() =>
+          void save.mutateAsync({
+            workStart: start,
+            workEnd: end,
+            workKeywords: keywords.split(",").map((k) => k.trim()).filter(Boolean),
+            workDays,
+            requiredDays,
+          })
+        }
       >
         Save working hours
       </Button>

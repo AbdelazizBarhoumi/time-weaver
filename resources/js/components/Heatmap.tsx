@@ -118,12 +118,13 @@ export function Heatmap({
     const x = Math.min(Math.max(c.left - w.left + c.width / 2, half), w.width - half);
     let text: string;
     const dateLabel = cell.date.toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
+    const logged = cell.hours > 0 ? ` · ${cell.hours.toFixed(1)}h logged` : "";
     if (cell.future) {
       text = cell.date.toLocaleDateString("en", { month: "short", day: "numeric" });
     } else if (cell.dayOffType === "excluded") {
-      text = `Day off (hours excluded) · ${dateLabel}`;
+      text = `Day off, hours excluded${logged} · ${dateLabel}`;
     } else if (cell.dayOffType === "included") {
-      text = `Day off (hours required) · ${dateLabel}`;
+      text = `Day off, hours still required${logged} · ${dateLabel}`;
     } else {
       text = `${cell.hours.toFixed(1)}h · ${dateLabel}`;
     }
@@ -210,9 +211,10 @@ export function Heatmap({
 
                       if (cell.future) {
                         baseClass += " bg-line/40 cursor-default";
-                      } else if (cell.dayOffType === "excluded") {
-                        baseClass += " bg-line relative cursor-pointer hover:ring-2 hover:ring-neon/50";
-                      } else if (cell.dayOffType === "included") {
+                      } else if (cell.dayOffType) {
+                        // A day off renders flat when nothing was logged, but any
+                        // hours still recorded that day stay visible (dimmed) so a
+                        // worked day never looks like a plain holiday.
                         baseClass += " relative cursor-pointer hover:ring-2 hover:ring-neon/50";
                         baseClass += level > 0 ? ` ${LEVEL_CLASSES[level]} opacity-40` : " bg-line";
                       } else {

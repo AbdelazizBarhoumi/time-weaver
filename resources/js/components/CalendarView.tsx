@@ -164,7 +164,7 @@ export function CalendarView(props: Props) {
             </div>
             {summaries.map((s, i) => (
               <div key={i} className="border-l border-line px-2 py-2">
-                {s.isWorkDay ? (
+                {s.isRequiredDay ? (
                   <>
                     <div className="h-1.5 overflow-hidden rounded-full bg-line">
                       <div
@@ -177,7 +177,9 @@ export function CalendarView(props: Props) {
                     </div>
                   </>
                 ) : (
-                  <div className="font-mono text-[10px] text-mut">off</div>
+                  <div className="font-mono text-[10px] text-mut">
+                    {s.doneMs > 0 ? <span className="text-ink">{formatHM(s.doneMs)}</span> : "off"}
+                  </div>
                 )}
               </div>
             ))}
@@ -213,13 +215,24 @@ function DeleteEventButton({
           type="button"
           className={className}
           title={series ? "Delete this event or the whole series" : "Delete this event"}
+          // The block around us treats a click/Enter as "toggle work", so nothing that
+          // belongs to this control may reach it. `DropdownMenuContent` guards its own
+          // events (see `menu-guards.ts`); the trigger needs the same treatment.
           onClick={(ev) => ev.stopPropagation()}
           onPointerDown={(ev) => ev.stopPropagation()}
+          onKeyDown={(ev) => ev.stopPropagation()}
+          onContextMenu={(ev) => ev.stopPropagation()}
         >
           <Trash2 className={iconClassName} />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
+      <DropdownMenuContent
+        align="end"
+        className="w-60"
+        // Selecting an item always opens the confirm dialog, which then owns focus.
+        // Without this the menu grabs focus back to its (now hidden) trigger.
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
         <DropdownMenuItem onSelect={() => onDelete(event, "this", false)}>Delete this event</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onDelete(event, "this", true)}>Delete this event permanently</DropdownMenuItem>
         {series && (
