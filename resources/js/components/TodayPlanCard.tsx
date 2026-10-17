@@ -12,7 +12,7 @@ import {
   type Interval,
 } from "@/lib/calendar";
 import { useTodaySessions } from "@/lib/queries";
-import { DAILY_GOAL_HOURS, formatHM, formatTime } from "@/lib/tracker";
+import { DAILY_GOAL_HOURS, formatHM, formatTime, isStudySession } from "@/lib/tracker";
 
 const DEFAULT_SETTINGS: CalendarSettings = {
   workStart: "06:00",
@@ -48,12 +48,23 @@ export function TodayPlanCard() {
   const events = useMemo(() => (eventsQ.data?.events ?? []).filter((e) => !e.allDay), [eventsQ.data]);
   const focusBlocks = focusQ.data ?? [];
 
-  const tracked: Interval[] = todaySessions.map((s) => ({
+  // Work sessions count toward the goal; study sessions only eat into free gaps.
+  const toInterval = (s: { start: string; end: string | null }): Interval => ({
     start: new Date(s.start).getTime(),
     end: s.end ? new Date(s.end).getTime() : now,
-  }));
+  });
+  const tracked: Interval[] = todaySessions.filter((s) => !isStudySession(s)).map(toInterval);
+  const studyBusy: Interval[] = todaySessions.filter((s) => isStudySession(s)).map(toInterval);
 
-  const budget = computeDayBudget({ day: today, now, events, focusBlocks, settings, trackedIntervals: tracked });
+  const budget = computeDayBudget({
+    day: today,
+    now,
+    events,
+    focusBlocks,
+    settings,
+    trackedIntervals: tracked,
+    extraBusy: studyBusy,
+  });
 
   const nextEvent = useMemo(
     () =>

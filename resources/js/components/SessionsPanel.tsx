@@ -41,6 +41,11 @@ export function SessionsPanel({ sessions, now, onDelete, onEdit }: Props) {
                     {running && s.pausedAt && <span className="ml-2 text-[10px] text-mut">(paused)</span>}
                   </div>
                   <div className="mt-1 font-mono text-[10px] text-mut">
+                    {s.type === "study" && (
+                      <span className="mr-1 rounded bg-amber-300/10 px-1 py-0.5 text-[9px] uppercase tracking-wider text-amber-300" title="Study session — blocks your work window, never counts toward work goals">
+                        study
+                      </span>
+                    )}
                     {s.source === "calendar" && (
                       <span className="mr-1 rounded bg-neon/10 px-1 py-0.5 text-[9px] uppercase tracking-wider text-neon" title="Auto-created from a calendar work event">
                         calendar

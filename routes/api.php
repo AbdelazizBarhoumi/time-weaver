@@ -7,6 +7,7 @@ use App\Http\Controllers\CalendarInsightController;
 use App\Http\Controllers\CalendarSettingsController;
 use App\Http\Controllers\DayOffController;
 use App\Http\Controllers\FocusBlockController;
+use App\Http\Controllers\SideTaskController;
 use App\Http\Controllers\WorkSessionController;
 use App\Models\WorkSession;
 use Illuminate\Support\Facades\Gate;
@@ -56,6 +57,13 @@ Route::middleware('auth:web')->group(function () {
     Route::post('calendar/focus-blocks', [FocusBlockController::class, 'store']);
     Route::put('calendar/focus-blocks/{block}', [FocusBlockController::class, 'update']);
     Route::delete('calendar/focus-blocks/{block}', [FocusBlockController::class, 'destroy']);
+
+    // Calendar: personal side tasks (todo list + optional placement)
+    Route::get('side-tasks', [SideTaskController::class, 'index']);
+    Route::post('side-tasks', [SideTaskController::class, 'store']);
+    Route::post('side-tasks/plan', [SideTaskController::class, 'plan']);
+    Route::put('side-tasks/{task}', [SideTaskController::class, 'update']);
+    Route::delete('side-tasks/{task}', [SideTaskController::class, 'destroy']);
 
     // Calendar: day intelligence + optional AI coach
     Route::get('calendar/coach/status', [CalendarInsightController::class, 'status']);

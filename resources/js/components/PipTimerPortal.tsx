@@ -1,4 +1,4 @@
-import { DAILY_GOAL_HOURS, formatHMS, hoursForDay, dayKey, sessionDurationMs, type WorkSession } from "@/lib/tracker";
+import { DAILY_GOAL_HOURS, formatHMS, hoursForDay, dayKey, sessionDurationMs, workSessionsOnly, type WorkSession } from "@/lib/tracker";
 
 interface PipTimerPortalProps {
   sessions: WorkSession[];
@@ -138,7 +138,9 @@ export function PipTimerPortal({ sessions, now, onPause, onResume, onStop, onClo
   const state: "running" | "paused" | "idle" = !active ? "idle" : active.pausedAt ? "paused" : "running";
 
   const sessionMs = active ? sessionDurationMs(active, now) : 0;
-  const todayHours = hoursForDay(sessions, dayKey(new Date(now)), now);
+  const isStudying = !!active && active.type === "study";
+  // Goal progress is work-only; the study ring timer still ticks normally.
+  const todayHours = hoursForDay(workSessionsOnly(sessions), dayKey(new Date(now)), now);
   const progress = Math.min(1, todayHours / DAILY_GOAL_HOURS);
   const leftHours = Math.max(0, DAILY_GOAL_HOURS - todayHours);
   const deg = Math.round(progress * 360);
@@ -178,7 +180,7 @@ export function PipTimerPortal({ sessions, now, onPause, onResume, onStop, onClo
             <div className="sgp-disc">
               <div className="sgp-center">
                 <div className="sgp-time">{formatHMS(sessionMs)}</div>
-                <div className="sgp-sub">{active ? "Current session" : "No session"}</div>
+                <div className="sgp-sub">{active ? (isStudying ? "Study session" : "Current session") : "No session"}</div>
               </div>
             </div>
           </div>

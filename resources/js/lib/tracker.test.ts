@@ -16,6 +16,8 @@ import {
     prepareSegments,
     validateSegments,
     insertSplitSegment,
+    isStudySession,
+    workSessionsOnly,
     DAILY_GOAL_HOURS,
     computeStats,
 } from "@/lib/tracker";
@@ -486,5 +488,29 @@ describe("lib/tracker utilities", () => {
         it("is zero without sessions", () => {
             expect(computeStats([], Date.now()).backlogHours).toBe(0);
         });
+    });
+});
+
+describe("study session helpers", () => {
+    const work: WorkSession = {
+        id: "1",
+        start: "2026-10-07T09:00:00.000Z",
+        end: "2026-10-07T10:00:00.000Z",
+        note: "",
+        pausedMs: 0,
+        pausedAt: null,
+        segments: [],
+        segmentsInferred: false,
+    };
+    const study: WorkSession = { ...work, id: "2", type: "study" };
+
+    it("flags only sessions tagged as study", () => {
+        expect(isStudySession(study)).toBe(true);
+        expect(isStudySession(work)).toBe(false);
+        expect(isStudySession({ ...work, type: "work" })).toBe(false);
+    });
+
+    it("filters study sessions out of the work view", () => {
+        expect(workSessionsOnly([work, study]).map((s) => s.id)).toEqual(["1"]);
     });
 });

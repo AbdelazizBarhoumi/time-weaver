@@ -74,6 +74,8 @@ export interface CalendarSession {
   /** null while the session is still running. */
   end: string | null;
   note: string;
+  /** Study sessions block the remaining work window but never count toward the goal. */
+  type?: "work" | "study";
   source: "manual" | "calendar";
   /** Work/pause pieces tiling the session; only work pieces count as tracked time. */
   segments: Segment[];
@@ -107,6 +109,34 @@ export interface FocusBlock {
   start: string;
   end: string;
 }
+
+/**
+ * A personal side task — "clean the room", "attend the class" — with an
+ * estimate. It lives in the sidebar todo list until it is placed on the
+ * calendar, and is either finished by hand or auto-finished once its slot has
+ * passed.
+ */
+export interface SideTask {
+  id: number;
+  title: string;
+  /** How long the user expects it to take, in minutes. */
+  estimateMinutes: number;
+  /** Whether a placed task consumes real working time. */
+  blocksWork: boolean;
+  /** ISO datetime of the placed slot, or null while it lives only in the todo list. */
+  start: string | null;
+  /** ISO datetime the slot actually ends (a manual finish shortens it), or null. */
+  end: string | null;
+  /** ISO datetime the task was ticked off by hand, or null. */
+  completedAt: string | null;
+  /** Server snapshot; re-derive it against the ticking clock with `isSideTaskDone`. */
+  done: boolean;
+}
+
+export type SideTaskStatus = "unscheduled" | "scheduled" | "done";
+
+/** Drag payload type used to drop a todo chip onto a calendar day column. */
+export const SIDE_TASK_DRAG_TYPE = "application/x-shiftgrid-side-task";
 
 export interface Interval {
   start: number;
@@ -149,10 +179,33 @@ export interface CoachChatMessage {
   content: string;
 }
 
+/**
+ * A slot the coach proposes for a side task. The server pulls it out of a
+ * `[[PLAN:…]]` marker, so the client can offer a one-click "Place" and never has
+ * to parse the reply's prose.
+ */
+export interface CoachPlanSuggestion {
+  taskId: number;
+  /** Local wall-clock "YYYY-MM-DDTHH:MM" — parsed in the browser's own timezone. */
+  start: string;
+  reason: string;
+}
+
 /** Response from the AI coach chat endpoint. */
 export interface CoachChatResponse {
   available: boolean;
   reply?: string;
+  /** Placements the coach recommends for side tasks, if any. */
+  suggestions?: CoachPlanSuggestion[];
+  generatedAt?: string;
+  message?: string;
+}
+
+/** Response from the bulk "plan my tasks" endpoint. */
+export interface CoachPlanResponse {
+  available: boolean;
+  reply?: string;
+  suggestions?: CoachPlanSuggestion[];
   generatedAt?: string;
   message?: string;
 }
@@ -207,6 +260,38 @@ export const calendarApi = {
   createFocusBlock: (b: { title?: string; start: string; end: string }) =>
     api.post<FocusBlock>("/calendar/focus-blocks", b).then((r) => r.data),
   deleteFocusBlock: (id: number) => api.delete(`/calendar/focus-blocks/${id}`),
+  sideTasks: () => api.get<SideTask[]>("/side-tasks").then((r) => r.data),
+  createSideTask: (t: { title: string; estimateMinutes: number; start?: string | null; blocksWork?: boolean }) =>
+    api
+      .post<SideTask>("/side-tasks", {
+        title: t.title,
+        estimate_minutes: t.estimateMinutes,
+        start: t.start ?? null,
+        blocks_work: t.blocksWork ?? true,
+      })
+      .then((r) => r.data),
+  updateSideTask: (
+    id: number,
+    patch: {
+      title?: string;
+      estimateMinutes?: number;
+      start?: string | null;
+      blocksWork?: boolean;
+      completed?: boolean;
+    },
+  ) =>
+    api
+      .put<SideTask>(`/side-tasks/${id}`, {
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.estimateMinutes !== undefined ? { estimate_minutes: patch.estimateMinutes } : {}),
+        ...(patch.start !== undefined ? { start: patch.start } : {}),
+        ...(patch.blocksWork !== undefined ? { blocks_work: patch.blocksWork } : {}),
+        ...(patch.completed !== undefined ? { completed: patch.completed } : {}),
+      })
+      .then((r) => r.data),
+  deleteSideTask: (id: number) => api.delete(`/side-tasks/${id}`),
+  planSideTasks: (context: CoachContext) =>
+    api.post<CoachPlanResponse>("/side-tasks/plan", { context }).then((r) => r.data),
   coachStatus: () => api.get<{ available: boolean }>("/calendar/coach/status").then((r) => r.data),
   coach: (facts: DayFacts) => api.post<CoachResponse>("/calendar/coach", { facts }).then((r) => r.data),
   coachChat: (messages: CoachChatMessage[], context: CoachContext) =>
@@ -239,6 +324,11 @@ export function useFocusBlocks(from: Date, to: Date) {
   return useQuery({ queryKey: ["calendar", "focus", f, t], queryFn: () => calendarApi.focusBlocks(f, t) });
 }
 
+/** Every side task: the todo list and the calendar both read this one list. */
+export function useSideTasks() {
+  return useQuery({ queryKey: ["calendar", "side-tasks"], queryFn: calendarApi.sideTasks });
+}
+
 /** Whether the AI coach is configured on the server. */
 export function useCoachStatus() {
   return useQuery({
@@ -259,6 +349,14 @@ export function useCoachChat() {
     mutationFn: (args: { messages: CoachChatMessage[]; context: CoachContext }) =>
       calendarApi.coachChat(args.messages, args.context),
   });
+}
+
+/**
+ * Ask the coach where the unplaced tasks should go. Read-only — it only returns
+ * suggestions, and nothing moves until the user places one.
+ */
+export function usePlanSideTasks() {
+  return useMutation({ mutationFn: (context: CoachContext) => calendarApi.planSideTasks(context) });
 }
 
 function useCalendarMutation<TArg, TResult>(fn: (arg: TArg) => Promise<TResult>) {
@@ -286,6 +384,19 @@ export const useSaveCalendarSettings = () => useCalendarMutation((s: CalendarSet
 export const useCreateFocusBlock = () =>
   useCalendarMutation((b: { title?: string; start: string; end: string }) => calendarApi.createFocusBlock(b));
 export const useDeleteFocusBlock = () => useCalendarMutation((id: number) => calendarApi.deleteFocusBlock(id));
+export const useCreateSideTask = () =>
+  useCalendarMutation(
+    (t: { title: string; estimateMinutes: number; start?: string | null; blocksWork?: boolean }) =>
+      calendarApi.createSideTask(t),
+  );
+export const useUpdateSideTask = () =>
+  useCalendarMutation(
+    (args: {
+      id: number;
+      patch: { title?: string; estimateMinutes?: number; start?: string | null; blocksWork?: boolean; completed?: boolean };
+    }) => calendarApi.updateSideTask(args.id, args.patch),
+  );
+export const useDeleteSideTask = () => useCalendarMutation((id: number) => calendarApi.deleteSideTask(id));
 
 export async function connectGoogleAccount() {
   const url = await calendarApi.connectUrl();
@@ -380,6 +491,49 @@ export function eventInterval(e: { start: string; end: string }): Interval {
 export function dayInterval(day: Date): Interval {
   const start = startOfDay(day).getTime();
   return { start, end: start + MS_PER_DAY };
+}
+
+/** End of a placed task's slot in ms, or null when the task is not placed. */
+export function sideTaskEnd(task: SideTask): number | null {
+  return task.end ? new Date(task.end).getTime() : null;
+}
+
+/**
+ * Done when the user ticked it off, or when its slot has already passed. Derived
+ * from the ticking clock so a task flips to done without a refetch.
+ */
+export function isSideTaskDone(task: SideTask, now: number): boolean {
+  if (task.completedAt !== null) return true;
+  const end = sideTaskEnd(task);
+  return end !== null && end <= now;
+}
+
+export function sideTaskStatus(task: SideTask, now: number): SideTaskStatus {
+  if (isSideTaskDone(task, now)) return "done";
+  return task.start === null ? "unscheduled" : "scheduled";
+}
+
+/** Todo order: unplaced first, then by scheduled start, then by id. */
+export function sortSideTasks(tasks: SideTask[]): SideTask[] {
+  return [...tasks].sort((a, b) => {
+    if ((a.start === null) !== (b.start === null)) return a.start === null ? -1 : 1;
+    const as = a.start ? new Date(a.start).getTime() : 0;
+    const bs = b.start ? new Date(b.start).getTime() : 0;
+    return as - bs || a.id - b.id;
+  });
+}
+
+/**
+ * The placed, blocking tasks as intervals clipped to `window` — what to feed the
+ * day's maths as `extraBusy` so a placed task eats into free time exactly like a
+ * non-work event would.
+ */
+export function blockingTaskIntervals(tasks: SideTask[], window: Interval): Interval[] {
+  return tasks
+    .filter((task) => task.blocksWork && task.start !== null && task.end !== null)
+    .map((task) => ({ start: new Date(task.start!).getTime(), end: sideTaskEnd(task)! }))
+    .map((iv) => clip(iv, window))
+    .filter((x): x is Interval => !!x);
 }
 
 /**
@@ -528,6 +682,8 @@ export function computeDayBudget(args: {
   settings: CalendarSettings;
   /** Tracked intervals, so a work event that is also a session is not counted twice. */
   trackedIntervals?: Interval[];
+  /** Placed side tasks that block work time; they eat into the free gaps too. */
+  extraBusy?: Interval[];
   goalHours?: number;
   minSlotMs?: number;
 }): DayBudget {
@@ -552,7 +708,7 @@ export function computeDayBudget(args: {
   const focus = focusBlocks
     .map((b) => clip(eventInterval(b), dayIv))
     .filter((x): x is Interval => !!x);
-  const busy = timed.filter((e) => !e.isWork).map(eventInterval);
+  const busy = [...timed.filter((e) => !e.isWork).map(eventInterval), ...(args.extraBusy ?? [])];
 
   const pastBoundary = Math.min(args.now, dayIv.end);
   const futureBoundary = Math.max(args.now, dayIv.start);
@@ -633,6 +789,8 @@ export function computeWorkableTimeLeft(args: {
   now: number;
   events: CalendarEvent[];
   settings: CalendarSettings;
+  /** Placed side tasks that block work time; they count as unavailable, like a meeting. */
+  extraBusy?: Interval[];
 }): WorkableTimeLeft {
   const { day, now, events, settings } = args;
   const working = isWorkDay(day, settings);
@@ -654,7 +812,10 @@ export function computeWorkableTimeLeft(args: {
 
   const remainingWindow: Interval = { start, end: window.end };
   const busy = clipAll(
-    events.filter((e) => !e.allDay && !e.isWork).map(eventInterval),
+    [
+      ...events.filter((e) => !e.allDay && !e.isWork).map(eventInterval),
+      ...(args.extraBusy ?? []),
+    ],
     remainingWindow,
   );
   const busyMs = totalMs(busy);
@@ -781,6 +942,8 @@ export function computeDayInsights(args: {
   focusBlocks: FocusBlock[];
   settings: CalendarSettings;
   trackedIntervals?: Interval[];
+  /** Placed side tasks that block work time; they occupy the day like events. */
+  extraBusy?: Interval[];
   goalHours?: number;
   backlogHours?: number | null;
   perDayNeededHours?: number | null;
@@ -796,9 +959,10 @@ export function computeDayInsights(args: {
   const busyAll = timed.filter((e) => !e.isWork);
   const workAll = timed.filter((e) => e.isWork);
 
-  const busyFromNow = busyAll
-    .map((e) => clip(eventInterval(e), { start, end: windowEnd }))
-    .filter((x): x is Interval => !!x);
+  const busyFromNow = [
+    ...busyAll.map((e) => clip(eventInterval(e), { start, end: windowEnd })),
+    ...(args.extraBusy ?? []).map((iv) => clip(iv, { start, end: windowEnd })),
+  ].filter((x): x is Interval => !!x);
   const workFromNow = workAll
     .map((e) => clip(eventInterval(e), { start, end: windowEnd }))
     .filter((x): x is Interval => !!x);
@@ -881,7 +1045,7 @@ export function computeDayInsights(args: {
         id: "fully-booked",
         tone: "warn",
         title: "Fully booked",
-        detail: `Only your events fit for the rest of the day. There is no free time before ${formatTime(windowEnd)}.`,
+        detail: `Only your events and tasks fit for the rest of the day. There is no free time before ${formatTime(windowEnd)}.`,
         hint: "Move something to make room if you still need to work.",
       });
     } else {
@@ -890,7 +1054,7 @@ export function computeDayInsights(args: {
           id: "tight",
           tone: "warn",
           title: "Meetings dominate the day",
-          detail: `Events take ${Math.round(capacity * 100)}% of your remaining window (${formatHM(busyMs)} of ${formatHM(remainingWindowMs)}).`,
+          detail: `Events and tasks take ${Math.round(capacity * 100)}% of your remaining window (${formatHM(busyMs)} of ${formatHM(remainingWindowMs)}).`,
         });
       }
       if (longestGapMs < 45 * 60_000 && freeGaps.length > 1) {
@@ -1054,6 +1218,34 @@ export interface CoachMonthContext {
 }
 
 /**
+ * A side task as the coach sees it, so it can recommend where to place it.
+ */
+export interface CoachTask {
+  id: number;
+  title: string;
+  estimateMinutes: number;
+  blocksWork: boolean;
+  /** ISO datetime when placed, else null (unplaced tasks sit in the todo list). */
+  start: string | null;
+  end: string | null;
+  done: boolean;
+}
+
+/** Roll-up of the side tasks for the coach. */
+export interface CoachTasksSummary {
+  total: number;
+  /** Unplaced and not done — the ones that still need a slot. */
+  unplaced: number;
+  /** Placed and not done yet. */
+  scheduled: number;
+  done: number;
+  /** Total estimate of the unplaced tasks, in hours. */
+  unplacedEstimateHours: number;
+  /** Blocking tasks' time still ahead today, in hours. */
+  blockingHoursToday: number;
+}
+
+/**
  * The data snapshot the coach answers from. It is rebuilt on every turn so the
  * model always sees the current time, day and week/month pressure.
  */
@@ -1070,12 +1262,18 @@ export interface CoachContext {
   month: CoachMonthContext | null;
   backlogHours: number | null;
   streak: number | null;
+  /** Side tasks worth telling the coach about, capped for prompt size. */
+  tasks: CoachTask[];
+  tasksSummary: CoachTasksSummary;
 }
+
+/** Cap on the side tasks sent with each turn, keeping the prompt bounded. */
+const MAX_COACH_TASKS = 40;
 
 /**
  * Assemble the grounding snapshot for the coach chat from the same numbers the
- * calendar already renders. Week and month figures are optional so the chat
- * still works before those queries resolve.
+ * calendar already renders. Week, month and tasks are optional so the chat still
+ * works before those queries resolve.
  */
 export function buildCoachContext(args: {
   intel: DayIntelligence;
@@ -1083,6 +1281,7 @@ export function buildCoachContext(args: {
   now: number;
   stats?: ApiStats | null;
   month?: ApiMonthStats | null;
+  tasks?: SideTask[];
   goalHours?: number;
 }): CoachContext {
   const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
@@ -1122,6 +1321,37 @@ export function buildCoachContext(args: {
       }
     : null;
 
+  // Tell the coach about the tasks that still matter: everything outstanding,
+  // plus the ones already finished today so it does not suggest them again.
+  const allTasks = args.tasks ?? [];
+  const liveTasks = allTasks.filter((task) => !isSideTaskDone(task, args.now));
+  const finishedToday = allTasks.filter(
+    (task) => isSideTaskDone(task, args.now) && task.start !== null && sameDay(new Date(task.start), today),
+  );
+  const tasks: CoachTask[] = [...liveTasks, ...finishedToday].slice(0, MAX_COACH_TASKS).map((task) => ({
+    id: task.id,
+    title: task.title,
+    estimateMinutes: task.estimateMinutes,
+    blocksWork: task.blocksWork,
+    start: task.start,
+    end: task.end,
+    done: isSideTaskDone(task, args.now),
+  }));
+
+  const unplaced = liveTasks.filter((task) => task.start === null);
+  const window = workWindow(today, args.settings);
+  const roundHours = (hours: number) => Math.round(hours * 10) / 10;
+  const tasksSummary: CoachTasksSummary = {
+    total: allTasks.length,
+    unplaced: unplaced.length,
+    scheduled: liveTasks.length - unplaced.length,
+    done: allTasks.length - liveTasks.length,
+    unplacedEstimateHours: roundHours(unplaced.reduce((sum, task) => sum + task.estimateMinutes, 0) / 60),
+    blockingHoursToday: roundHours(
+      totalMs(blockingTaskIntervals(liveTasks, { start: Math.max(window.start, args.now), end: window.end })) / 3_600_000,
+    ),
+  };
+
   return {
     now: new Date(args.now).toISOString(),
     // Facts carry UTC instants; naming the zone lets the coach present them on
@@ -1134,6 +1364,8 @@ export function buildCoachContext(args: {
     month,
     backlogHours: args.stats?.backlogHours ?? null,
     streak: args.stats?.streak ?? null,
+    tasks,
+    tasksSummary,
   };
 }
 

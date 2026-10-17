@@ -13,6 +13,11 @@ export interface WorkSession {
   /** ISO timestamp of session end, null while running */
   end: string | null;
   note: string;
+  /**
+   * Work sessions count toward the daily goal and work stats; study sessions
+   * only block that time from the remaining work window on the calendar.
+   */
+  type?: "work" | "study";
   /** Where the session came from: a manual timer/entry, or a calendar work event */
   source?: "manual" | "calendar";
   /** Accumulated paused milliseconds (excluded from duration) */
@@ -119,6 +124,16 @@ export function sessionDurationMs(s: WorkSession, now: number = Date.now()): num
   let paused = s.pausedMs;
   if (s.pausedAt) paused += now - new Date(s.pausedAt).getTime();
   return Math.max(0, end - start - paused);
+}
+
+/** Study sessions never count toward work goals or stats — only block the work window. */
+export function isStudySession(s: { type?: "work" | "study" }): boolean {
+  return s.type === "study";
+}
+
+/** Work-only view of a session list, for goal rings, heatmaps and stats. */
+export function workSessionsOnly(sessions: WorkSession[]): WorkSession[] {
+  return sessions.filter((s) => !isStudySession(s));
 }
 
 export function segmentDurationMs(seg: Segment, now: number = Date.now()): number {

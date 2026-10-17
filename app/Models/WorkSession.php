@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
 
-#[Fillable(['user_id', 'start', 'end', 'note', 'source', 'calendar_account_id', 'calendar_event_id', 'paused_ms', 'paused_at', 'segments'])]
+#[Fillable(['user_id', 'start', 'end', 'note', 'type', 'source', 'calendar_account_id', 'calendar_event_id', 'paused_ms', 'paused_at', 'segments'])]
 #[Hidden(['pivot'])]
 class WorkSession extends Model
 {
@@ -41,6 +41,13 @@ class WorkSession extends Model
     {
         return Attribute::make(
             get: fn (): bool => $this->source === 'calendar',
+        );
+    }
+
+    protected function isStudy(): Attribute
+    {
+        return Attribute::make(
+            get: fn (): bool => $this->type === 'study',
         );
     }
 

@@ -45,4 +45,9 @@ class User extends Authenticatable
     {
         return $this->hasMany(FocusBlock::class);
     }
+
+    public function sideTasks(): HasMany
+    {
+        return $this->hasMany(SideTask::class);
+    }
 }

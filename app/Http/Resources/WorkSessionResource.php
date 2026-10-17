@@ -14,6 +14,7 @@ class WorkSessionResource extends JsonResource
             'start' => $this->start?->toISOString(),
             'end' => $this->end?->toISOString(),
             'note' => $this->note,
+            'type' => $this->type ?? 'work',
             'source' => $this->source ?? 'manual',
             'calendarEventId' => $this->calendar_event_id,
             'pausedMs' => $this->paused_ms,

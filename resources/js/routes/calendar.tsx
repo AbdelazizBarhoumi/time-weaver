@@ -9,13 +9,16 @@ import { MonthView } from "@/components/MonthView";
 import { AccountsCard, BudgetCard, Legend, SettingsCard, WorkableTimeCard } from "@/components/CalendarSidebar";
 import { DayIntelligenceCard } from "@/components/DayIntelligenceCard";
 import { CoachChatFab } from "@/components/CoachChatFab";
+import { TodoCard } from "@/components/TodoCard";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import {
   addDays,
+  blockingTaskIntervals,
   buildCoachContext,
   computeDayBudget,
   computeDayInsights,
   computeWorkableTimeLeft,
+  dayInterval,
   isWorkDay,
   relativeTime,
   sameDay,
@@ -30,18 +33,22 @@ import {
   useCreateFocusBlock,
   useDeleteCalendarEvent,
   useDeleteFocusBlock,
+  useDeleteSideTask,
   useFocusBlocks,
   usePurgeAccountEvents,
   useRestoreAccountEvents,
+  useSideTasks,
   useSyncCalendars,
   useTagEvent,
   useUpdateCalendarAccount,
+  useUpdateSideTask,
   type CalendarEvent,
   type CalendarSession,
   type CalendarSettings,
   type DaySummary,
   type DeleteScope,
   type Interval,
+  type SideTask,
 } from "@/lib/calendar";
 import { useCreateSession, useDeleteSession, useMonthlyBreakdown, useSessions, useStats } from "@/lib/queries";
 import { DAILY_GOAL_HOURS, formatHM, formatTime } from "@/lib/tracker";
@@ -101,6 +108,8 @@ function CalendarPage() {
   const [now, setNow] = useState(() => Date.now());
   const [density, setDensity] = useState<CalendarDensity>(readDensity);
   const [hidden, setHidden] = useState<Set<number>>(readHidden);
+  /** The side task armed for click-to-place, if any. */
+  const [placingId, setPlacingId] = useState<number | null>(null);
   const [syncErrors, setSyncErrors] = useState<{ accountId: number; email: string; message: string }[]>([]);
 
   useEffect(() => {
@@ -127,6 +136,7 @@ function CalendarPage() {
   const settingsQ = useCalendarSettings();
   const eventsQ = useCalendarEvents(rangeFrom, rangeTo);
   const focusQ = useFocusBlocks(rangeFrom, rangeTo);
+  const tasksQ = useSideTasks();
   const sessionsQ = useSessions({ from: rangeFrom.toISOString(), to: rangeTo.toISOString(), per_page: 500 });
   const statsQ = useStats();
   const monthlyQ = useMonthlyBreakdown(2);
@@ -134,6 +144,8 @@ function CalendarPage() {
   const tag = useTagEvent();
   const createFocus = useCreateFocusBlock();
   const deleteFocus = useDeleteFocusBlock();
+  const updateTask = useUpdateSideTask();
+  const deleteTask = useDeleteSideTask();
   const createSession = useCreateSession();
   const deleteSession = useDeleteSession();
   const confirm = useConfirm();
@@ -147,6 +159,7 @@ function CalendarPage() {
   const settings = settingsQ.data ?? DEFAULT_SETTINGS;
   const allEvents = eventsQ.data?.events ?? [];
   const focusBlocks = focusQ.data ?? [];
+  const tasks = tasksQ.data ?? [];
   const sessions: ApiWorkSession[] = sessionsQ.data ?? [];
 
   const hasRunningSession = sessions.some((s) => !s.end);
@@ -165,6 +178,7 @@ function CalendarPage() {
         start: s.start,
         end: s.end,
         note: s.note,
+        type: s.type ?? "work",
         source: s.source ?? "manual",
         segments: s.segments ?? [],
         segmentsInferred: s.segmentsInferred ?? false,
@@ -183,13 +197,27 @@ function CalendarPage() {
     (s: CalendarSession): Interval[] => sessionWorkIntervals(s, now),
     [now],
   );
-  const intervalsForDay = useCallback(
-    (day: Date) =>
-      calendarSessions.filter((s) => sameDay(new Date(s.start), day)).flatMap(workIntervalsOf),
+  // Work sessions feed the goal math; study sessions only block free time.
+  const intervalsOfType = useCallback(
+    (day: Date, study: boolean) =>
+      calendarSessions
+        .filter((s) => sameDay(new Date(s.start), day) && ((s.type ?? "work") === "study") === study)
+        .flatMap(workIntervalsOf),
     [calendarSessions, workIntervalsOf],
   );
+  const intervalsForDay = useCallback((day: Date) => intervalsOfType(day, false), [intervalsOfType]);
+  const studyIntervalsForDay = useCallback((day: Date) => intervalsOfType(day, true), [intervalsOfType]);
 
   const todayIntervals = intervalsForDay(todayStart);
+  // Only placed, blocking tasks take time away from today; flexible ones do not.
+  // Study sessions sit in the same busy pile: they shrink the remaining work
+  // window and the free gaps, but never the goal itself. `now` is a dependency
+  // so a running study band keeps growing with the clock.
+  const todayExtraBusy = useMemo(
+    () => [...blockingTaskIntervals(tasks, dayInterval(todayStart)), ...studyIntervalsForDay(todayStart)],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tasks, todayStart.getTime(), sessions, now],
+  );
   const budget = useMemo(
     () =>
       computeDayBudget({
@@ -200,15 +228,16 @@ function CalendarPage() {
         events,
         focusBlocks,
         settings,
+        extraBusy: todayExtraBusy,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, focusBlocks, settings, now, sessions],
+    [events, focusBlocks, settings, now, sessions, todayExtraBusy],
   );
 
   const workable = useMemo(
-    () => computeWorkableTimeLeft({ day: todayStart, now, events, settings }),
+    () => computeWorkableTimeLeft({ day: todayStart, now, events, settings, extraBusy: todayExtraBusy }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, settings, now],
+    [events, settings, now, todayExtraBusy],
   );
 
   const currentMonth = monthlyQ.data?.find((m) => m.isCurrent);
@@ -225,9 +254,10 @@ function CalendarPage() {
         settings,
         backlogHours: statsQ.data?.backlogHours ?? null,
         perDayNeededHours: currentMonth?.perDayNeeded ?? null,
+        extraBusy: todayExtraBusy,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, focusBlocks, settings, now, sessions, statsQ.data, currentMonth],
+    [events, focusBlocks, settings, now, sessions, statsQ.data, currentMonth, todayExtraBusy],
   );
 
   const coachContext = useMemo(
@@ -238,10 +268,16 @@ function CalendarPage() {
         now,
         stats: statsQ.data ?? null,
         month: currentMonth ?? null,
+        tasks,
         goalHours: DAILY_GOAL_HOURS,
       }),
-    [intel, settings, now, statsQ.data, currentMonth],
+    [intel, settings, now, statsQ.data, currentMonth, tasks],
   );
+
+  // Placement only exists on the day/week grid, so leaving it disarms the task.
+  useEffect(() => {
+    if (isMonth) setPlacingId(null);
+  }, [isMonth]);
 
   const summaries: DaySummary[] = useMemo(() => {
     if (isMonth) return [];
@@ -252,7 +288,11 @@ function CalendarPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMonth, dayCount, gridFirst, events, focusBlocks, settings, sessions]);
 
-  const allIntervals = useMemo(() => calendarSessions.flatMap(workIntervalsOf), [calendarSessions, workIntervalsOf]);
+  // Month-view goal progress stays work-only; study bands still render as chips.
+  const allIntervals = useMemo(
+    () => calendarSessions.filter((s) => (s.type ?? "work") !== "study").flatMap(workIntervalsOf),
+    [calendarSessions, workIntervalsOf],
+  );
 
   const step = useCallback(
     (dir: -1 | 1) => {
@@ -308,6 +348,48 @@ function CalendarPage() {
       },
       onError: () => toast.error("Sync failed. Please try again."),
     });
+  };
+
+  /** Arm (or disarm) click-to-place for a task, so the next grid click lands it. */
+  const togglePlacing = (task: SideTask) => {
+    setPlacingId((current) => (current === task.id ? null : task.id));
+  };
+
+  const placeTask = (task: SideTask, start: Date) => {
+    updateTask.mutate(
+      { id: task.id, patch: { start: start.toISOString() } },
+      {
+        onSuccess: () => {
+          setPlacingId(null);
+          toast.success(
+            `Placed "${task.title}" · ${start.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })}`,
+          );
+        },
+        onError: () => toast.error("Could not place that task."),
+      },
+    );
+  };
+
+  const completeTask = (task: SideTask, completed: boolean) => {
+    updateTask.mutate(
+      { id: task.id, patch: { completed } },
+      {
+        onSuccess: () => toast.success(completed ? `Done: ${task.title}` : `Reopened: ${task.title}`),
+        onError: () => toast.error("Could not update that task."),
+      },
+    );
+  };
+
+  const removeTask = async (task: SideTask) => {
+    const confirmed = await confirm({
+      title: "Delete this task?",
+      description: `Delete "${task.title}" from your todo list and calendar.`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!confirmed) return;
+
+    deleteTask.mutate(task.id, { onSuccess: () => toast.success("Task deleted") });
   };
 
   const removeSession = async (session: CalendarSession) => {
@@ -466,6 +548,8 @@ function CalendarPage() {
                 settings={settings}
                 events={events}
                 focusBlocks={focusBlocks}
+                tasks={tasks}
+                placingId={placingId}
                 sessions={calendarSessions}
                 todaySlots={budget.isRequiredDay ? budget.slots : []}
                 density={density}
@@ -473,6 +557,11 @@ function CalendarPage() {
                 onToggleWork={(e) => onToggleWork(e)}
                 onResetWork={(e) => onResetWork(e)}
                 onDeleteEvent={removeEvent}
+                onPlaceTask={placeTask}
+                onCompleteTask={completeTask}
+                onDeleteTask={removeTask}
+                onMoveTask={togglePlacing}
+                onCancelPlacing={() => setPlacingId(null)}
                 onCreateFocus={async (start, end) => {
                   const title = await prompt({
                     title: "New work block",
@@ -509,13 +598,21 @@ function CalendarPage() {
           )}
           <p className="mt-3 font-mono text-[11px] text-mut">
             Drag empty space to plan · Click an event to mark it as work (adds a tracked session) · Right-click to reset ·
-            Click a green gap to log that time
+            Click a green gap to log that time · Drag a side task onto a day to schedule it
           </p>
         </div>
 
         <aside className="min-h-0 space-y-4 lg:overflow-y-auto lg:pr-1">
           <DayIntelligenceCard intel={intel} />
           <WorkableTimeCard workable={workable} />
+          <TodoCard
+            tasks={tasks}
+            now={now}
+            coachContext={coachContext}
+            placingId={placingId}
+            onTogglePlacing={togglePlacing}
+            onDelete={removeTask}
+          />
           <BudgetCard budget={budget} />
           <AccountsCard
             accounts={accounts.data ?? []}

@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, RotateCcw, Send, Sparkles, X } from "lucide-react";
+import { CalendarClock, Check, Loader2, RotateCcw, Send, Sparkles, X } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   useCoachChat,
   useCoachStatus,
+  useUpdateSideTask,
   type CoachChatMessage,
   type CoachContext,
+  type CoachPlanSuggestion,
 } from "@/lib/calendar";
 
 const FAB_SIZE = 48;
@@ -80,6 +83,8 @@ export function CoachChatFab({ context }: { context: CoachContext }) {
   const [messages, setMessages] = useState<CoachChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** Slots the coach proposed for side tasks in its latest reply. */
+  const [suggestions, setSuggestions] = useState<CoachPlanSuggestion[]>([]);
 
   const drag = useRef<{ dx: number; dy: number; startX: number; startY: number; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
@@ -87,6 +92,7 @@ export function CoachChatFab({ context }: { context: CoachContext }) {
 
   const chat = useCoachChat();
   const status = useCoachStatus();
+  const updateTask = useUpdateSideTask();
   const available = status.data?.available !== false;
 
   // Restore the dragged position (or place it bottom-left) once on the client.
@@ -179,17 +185,42 @@ export function CoachChatFab({ context }: { context: CoachContext }) {
     setMessages(next);
     setInput("");
     setError(null);
+    setSuggestions([]);
 
     try {
       const res = await chat.mutateAsync({ messages: next, context });
       if (res.reply) {
         setMessages([...next, { role: "assistant", content: res.reply }]);
+        setSuggestions(res.suggestions ?? []);
       } else {
         setError(res.message ?? "The coach had nothing to say.");
       }
     } catch (err) {
       setError(errorMessage(err));
     }
+  };
+
+  const titleOf = (taskId: number) => context.tasks.find((task) => task.id === taskId)?.title ?? "Task";
+
+  /** Confirm a coach proposal: the task moves only when the user clicks Place. */
+  const placeSuggestion = (suggestion: CoachPlanSuggestion) => {
+    const start = new Date(suggestion.start);
+    updateTask.mutate(
+      { id: suggestion.taskId, patch: { start: start.toISOString() } },
+      {
+        onSuccess: () => {
+          setSuggestions((prev) => prev.filter((item) => item !== suggestion));
+          toast.success(
+            `${titleOf(suggestion.taskId)} → ${start.toLocaleString("en-US", {
+              weekday: "short",
+              hour: "numeric",
+              minute: "2-digit",
+            })}`,
+          );
+        },
+        onError: () => toast.error("Could not place that task."),
+      },
+    );
   };
 
   const panelStyle = useMemo(() => {
@@ -232,6 +263,7 @@ export function CoachChatFab({ context }: { context: CoachContext }) {
                 onClick={() => {
                   setMessages([]);
                   setError(null);
+                  setSuggestions([]);
                 }}
                 disabled={messages.length === 0}
                 className="rounded p-1 text-mut hover:text-ink disabled:opacity-30"
@@ -275,6 +307,40 @@ export function CoachChatFab({ context }: { context: CoachContext }) {
               <div className="mr-auto flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs text-mut">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
               </div>
+            )}
+
+            {suggestions.length > 0 && (
+              <ul className="space-y-2">
+                {suggestions.map((suggestion, i) => {
+                  const start = new Date(suggestion.start);
+                  return (
+                    <li key={`${suggestion.taskId}-${i}`} className="rounded-lg border border-neon/40 bg-neon/5 p-2">
+                      <div className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-neon">
+                        <CalendarClock className="h-3 w-3" />
+                        {titleOf(suggestion.taskId)}
+                      </div>
+                      <div className="mt-0.5 font-mono text-[10px] text-mut">
+                        {start.toLocaleString("en-US", {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                      {suggestion.reason && <div className="mt-1 text-[11px] text-mut">{suggestion.reason}</div>}
+                      <button
+                        type="button"
+                        onClick={() => placeSuggestion(suggestion)}
+                        disabled={updateTask.isPending}
+                        className="mt-2 flex items-center gap-1 rounded border border-neon/40 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-neon hover:bg-neon/10 disabled:opacity-40"
+                      >
+                        <Check className="h-3 w-3" /> place
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
 
             <div ref={endRef} />

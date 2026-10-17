@@ -43,6 +43,7 @@ class WorkSessionController extends Controller
             'start' => 'required|date',
             'end' => 'nullable|date|after_or_equal:start',
             'note' => 'nullable|string',
+            'type' => 'sometimes|in:work,study',
             'paused_ms' => 'nullable|integer|min:0',
             'paused_at' => 'nullable|date',
             ...$this->segmentRules(),
@@ -65,6 +66,7 @@ class WorkSessionController extends Controller
             'start' => $data['start'],
             'end' => $data['end'] ?? null,
             'note' => $data['note'] ?? '',
+            'type' => $data['type'] ?? 'work',
             'paused_ms' => $data['paused_ms'] ?? 0,
             'paused_at' => $data['paused_at'] ?? null,
             'segments' => $data['segments'] ?? null,
@@ -90,6 +92,7 @@ class WorkSessionController extends Controller
             'start' => 'sometimes|date',
             'end' => 'nullable|date|after_or_equal:start',
             'note' => 'nullable|string',
+            'type' => 'sometimes|in:work,study',
             'paused_ms' => 'sometimes|integer|min:0',
             'paused_at' => 'nullable|date',
             ...$this->segmentRules(),
@@ -135,7 +138,8 @@ class WorkSessionController extends Controller
 
     public function stats(Request $request)
     {
-        $sessions = $request->user()->workSessions()->get();
+        // Study sessions never feed the work stats — only tracked work counts.
+        $sessions = $request->user()->workSessions()->where('type', 'work')->get();
         $dayOffs = $request->user()->dayOffs()->get();
         $requiredDays = CalendarSetting::forUser($request->user())->requiredDays();
         $excludedDayOffs = $dayOffs->where('type', 'excluded')->pluck('date')->map(fn ($d) => $d->format('Y-m-d'))->toArray();
@@ -258,7 +262,7 @@ class WorkSessionController extends Controller
     public function monthly(Request $request)
     {
         $count = $request->integer('count', 4);
-        $sessions = $request->user()->workSessions()->get();
+        $sessions = $request->user()->workSessions()->where('type', 'work')->get();
         $dayOffs = $request->user()->dayOffs()->get();
         $requiredDays = CalendarSetting::forUser($request->user())->requiredDays();
         $now = now();

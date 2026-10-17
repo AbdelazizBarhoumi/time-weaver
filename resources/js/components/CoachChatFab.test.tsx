@@ -3,12 +3,13 @@ import { render, screen, fireEvent, waitFor } from "@/test/utils";
 import { CoachChatFab } from "@/components/CoachChatFab";
 import type { CoachContext } from "@/lib/calendar";
 
-const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+const { get, post, put } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }));
 
 vi.mock("@/lib/api", () => ({
   api: {
     get: (...args: unknown[]) => get(...args),
     post: (...args: unknown[]) => post(...args),
+    put: (...args: unknown[]) => put(...args),
   },
 }));
 
@@ -40,6 +41,39 @@ const context: CoachContext = {
   month: null,
   backlogHours: 2.5,
   streak: 4,
+  tasks: [],
+  tasksSummary: {
+    total: 0,
+    unplaced: 0,
+    scheduled: 0,
+    done: 0,
+    unplacedEstimateHours: 0,
+    blockingHoursToday: 0,
+  },
+};
+
+/** The same snapshot, but with one unplaced side task the coach can schedule. */
+const contextWithTask: CoachContext = {
+  ...context,
+  tasks: [
+    {
+      id: 7,
+      title: "Clean the room",
+      estimateMinutes: 45,
+      blocksWork: false,
+      start: null,
+      end: null,
+      done: false,
+    },
+  ],
+  tasksSummary: {
+    total: 1,
+    unplaced: 1,
+    scheduled: 0,
+    done: 0,
+    unplacedEstimateHours: 0.8,
+    blockingHoursToday: 0,
+  },
 };
 
 function fab(): HTMLElement {
@@ -137,5 +171,31 @@ describe("CoachChatFab", () => {
 
     expect(await screen.findByText(/Add a GEMINI_API_KEY/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("renders a proposed slot for a task and places it on click", async () => {
+    post.mockResolvedValue({
+      data: {
+        available: true,
+        reply: "Tuesday 5pm still leaves you three hours.",
+        suggestions: [{ taskId: 7, start: "2026-10-20T17:00", reason: "Still leaves 3h for work" }],
+      },
+    });
+    put.mockResolvedValue({ data: {} });
+
+    render(<CoachChatFab context={contextWithTask} />);
+    fireEvent.click(fab());
+    fireEvent.click(await screen.findByRole("button", { name: "How much free time do I have today?" }));
+
+    expect(await screen.findByText("Clean the room")).toBeInTheDocument();
+    expect(screen.getByText("Still leaves 3h for work")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /place/i }));
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith("/side-tasks/7", {
+        start: new Date("2026-10-20T17:00").toISOString(),
+      }),
+    );
   });
 });

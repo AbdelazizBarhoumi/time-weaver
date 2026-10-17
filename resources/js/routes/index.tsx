@@ -12,6 +12,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import {
   dayKey,
   hoursForDay,
+  workSessionsOnly,
   DAILY_GOAL_HOURS,
   startSegments,
   pauseSegments,
@@ -40,6 +41,7 @@ function apiToWorkSession(s: ApiWorkSession): WorkSession {
     start: s.start,
     end: s.end,
     note: s.note,
+    type: s.type ?? "work",
     source: s.source ?? "manual",
     pausedMs: s.pausedMs,
     pausedAt: s.pausedAt,
@@ -107,10 +109,11 @@ function Index() {
   const sessionsTyped = sessions as ApiWorkSession[];
   const hasActive = sessionsTyped.some((s) => !s.end);
 
-  const startSession = () => {
+  const startSession = (type: "work" | "study" = "work") => {
     if (hasActive) return;
     createSession.mutate({
       start: new Date().toISOString(),
+      type,
       segments: startSegments(Date.now()),
     });
   };
@@ -191,7 +194,7 @@ function Index() {
   };
 
   const workSessions = sessionsTyped.map(apiToWorkSession);
-  const todayHours = hoursForDay(workSessions, dayKey(new Date(now)), now);
+  const todayHours = hoursForDay(workSessionsOnly(workSessions), dayKey(new Date(now)), now);
 
   const backlog = stats?.backlogHours ?? 0;
   const backlogT = Math.min(1, Math.max(0, backlog / DAILY_GOAL_HOURS));
@@ -259,7 +262,8 @@ function Index() {
           <TimerCard
             sessions={workSessions}
             now={now}
-            onStart={startSession}
+            onStart={() => startSession("work")}
+            onStartStudy={() => startSession("study")}
             onPause={pauseSession}
             onResume={resumeSession}
             onStop={stopSession}
@@ -268,7 +272,7 @@ function Index() {
           <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} onEdit={handleEditSession} />
           <TodayPlanCard />
           <Heatmap
-            sessions={workSessions}
+            sessions={workSessionsOnly(workSessions)}
             now={now}
             customDayOffs={customDayOffs}
             onToggleDayOff={handleToggleDayOff}
@@ -277,7 +281,7 @@ function Index() {
             onEditSession={handleEditSession}
             onDeleteSession={handleDeleteSession}
           />
-          <MonthlyCard sessions={workSessions} now={now} customDayOffs={customDayOffs} />
+          <MonthlyCard sessions={workSessionsOnly(workSessions)} now={now} customDayOffs={customDayOffs} />
 
           <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-5">
             {statCards.map((c, i) => (

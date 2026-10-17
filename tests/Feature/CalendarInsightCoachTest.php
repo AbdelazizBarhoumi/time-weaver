@@ -401,6 +401,34 @@ class CalendarInsightCoachTest extends TestCase
             ],
             'backlogHours' => 2.5,
             'streak' => 4,
+            'tasks' => [
+                [
+                    'id' => 7,
+                    'title' => 'Clean the room',
+                    'estimateMinutes' => 45,
+                    'blocksWork' => false,
+                    'start' => null,
+                    'end' => null,
+                    'done' => false,
+                ],
+                [
+                    'id' => 8,
+                    'title' => 'Dentist appointment',
+                    'estimateMinutes' => 60,
+                    'blocksWork' => true,
+                    'start' => '2026-10-14T15:00:00.000Z',
+                    'end' => '2026-10-14T16:00:00.000Z',
+                    'done' => false,
+                ],
+            ],
+            'tasksSummary' => [
+                'total' => 2,
+                'unplaced' => 1,
+                'scheduled' => 1,
+                'done' => 0,
+                'unplacedEstimateHours' => 0.8,
+                'blockingHoursToday' => 1,
+            ],
         ];
     }
 
@@ -531,5 +559,85 @@ class CalendarInsightCoachTest extends TestCase
         $this->expectException(RuntimeException::class);
 
         (new GeminiCoachService)->chat($this->chatMessages(), $this->chatContext());
+    }
+
+    public function test_chat_tells_the_coach_how_to_place_side_tasks(): void
+    {
+        $this->fakeReply('Nothing to schedule.');
+
+        $this->postChat()->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $system = $request['system_instruction'];
+
+            return str_contains($system, 'Side tasks are the user\'s personal to-dos')
+                && str_contains($system, 'A task is unplaced when its start is null')
+                && str_contains($system, '[[PLAN:<task id>|<YYYY-MM-DD HH:MM>]]')
+                // The snapshot carries the real tasks, titles and all.
+                && str_contains($system, '"title": "Clean the room"')
+                && str_contains($system, '"estimateMinutes": 45')
+                && str_contains($system, '"blocksWork": false')
+                // The roll-up the coach reasons over.
+                && str_contains($system, '"unplacedEstimateHours": 0.8')
+                && str_contains($system, '"blockingHoursToday": 1');
+        });
+    }
+
+    public function test_chat_strips_plan_markers_and_returns_them_as_suggestions(): void
+    {
+        $this->fakeReply(
+            "Tuesday 17:00 is free, so put it there. [[PLAN:7|2026-10-20 17:00]]\n"
+            .'Everything else is covered.',
+        );
+
+        $this->postChat()
+            ->assertStatus(200)
+            ->assertJsonPath('reply', "Tuesday 17:00 is free, so put it there.\nEverything else is covered.")
+            ->assertJsonPath('suggestions.0.taskId', 7)
+            // Wall-clock local time, so the browser can read it in its own zone.
+            ->assertJsonPath('suggestions.0.start', '2026-10-20T17:00')
+            ->assertJsonPath('suggestions.0.reason', 'Tuesday 17:00 is free, so put it there.');
+    }
+
+    public function test_chat_returns_no_suggestions_when_the_reply_has_no_markers(): void
+    {
+        $this->fakeReply('You have about 3 hours of free time today.');
+
+        $this->postChat()
+            ->assertStatus(200)
+            ->assertJsonPath('suggestions', [])
+            ->assertJsonPath('reply', 'You have about 3 hours of free time today.');
+    }
+
+    public function test_extract_plans_ignores_malformed_markers(): void
+    {
+        $service = new GeminiCoachService;
+
+        $result = $service->extractPlans(
+            "Good: [[PLAN:notanumber|2026-10-20 17:00]] stays visible.\n"
+            ."OK: [[PLAN:7|soon]] stays visible.\n"
+            ."Fine: [[PLAN:9|2026-10-21 09:30]] goes out.\n"
+            .'Plain text.',
+        );
+
+        $this->assertSame([
+            ['taskId' => 9, 'start' => '2026-10-21T09:30', 'reason' => 'Fine: goes out.'],
+        ], $result['plans']);
+
+        $this->assertSame(
+            "Good: [[PLAN:notanumber|2026-10-20 17:00]] stays visible.\n"
+            ."OK: [[PLAN:7|soon]] stays visible.\n"
+            ."Fine: goes out.\n"
+            .'Plain text.',
+            $result['text'],
+        );
+    }
+
+    public function test_extract_plans_tolerates_seconds_and_a_space_separator(): void
+    {
+        $result = (new GeminiCoachService)->extractPlans('[[PLAN:3|2026-10-22 08:15:00]]');
+
+        $this->assertSame([['taskId' => 3, 'start' => '2026-10-22T08:15', 'reason' => '']], $result['plans']);
+        $this->assertSame('', $result['text']);
     }
 }

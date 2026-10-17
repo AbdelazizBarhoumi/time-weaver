@@ -1,5 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
-import { Briefcase, Play, Plus, Trash2 } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { Briefcase, CalendarClock, Check, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -12,9 +20,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  SIDE_TASK_DRAG_TYPE,
   addDays,
   eventInterval,
   hhmmToMinutes,
+  isSideTaskDone,
   isWorkDay,
   layoutColumns,
   sameDay,
@@ -28,6 +38,7 @@ import {
   type DeleteScope,
   type FocusBlock,
   type SessionBand,
+  type SideTask,
   type SuggestedSlot,
 } from "@/lib/calendar";
 import { formatHM, formatTime } from "@/lib/tracker";
@@ -44,6 +55,10 @@ interface Props {
   settings: CalendarSettings;
   events: CalendarEvent[];
   focusBlocks: FocusBlock[];
+  /** Personal side tasks; placed ones are drawn as amber blocks on their day. */
+  tasks: SideTask[];
+  /** The task armed for click-to-place, if any. */
+  placingId: number | null;
   /** Tracked work sessions to draw onto the grid, live ones included. */
   sessions: CalendarSession[];
   todaySlots: SuggestedSlot[];
@@ -58,6 +73,15 @@ interface Props {
   onStartFocus: (b: FocusBlock) => void;
   onLogWork?: (start: Date, end: Date) => void;
   onDeleteSession: (s: CalendarSession) => void;
+  /** Drop or click-place a side task at a concrete time. */
+  onPlaceTask: (task: SideTask, start: Date) => void;
+  /** Tick a task off (or reopen it) straight from the grid. */
+  onCompleteTask: (task: SideTask, completed: boolean) => void;
+  onDeleteTask: (task: SideTask) => void;
+  /** Arm click-to-place for a task, e.g. from its "Move" control. */
+  onMoveTask: (task: SideTask) => void;
+  /** Leave click-to-place mode. */
+  onCancelPlacing: () => void;
 }
 
 function timeZoneLabel(): string {
@@ -84,6 +108,19 @@ export function CalendarView(props: Props) {
   const heightPx = (totalMin / 60) * HOUR_PX;
   const days = useMemo(() => Array.from({ length: dayCount }, (_, i) => addDays(firstDay, i)), [firstDay, dayCount]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const placingTask = props.placingId === null ? null : props.tasks.find((t) => t.id === props.placingId) ?? null;
+  const { onCancelPlacing } = props;
+
+  // Esc leaves placement mode without scheduling anything.
+  useEffect(() => {
+    if (placingTask === null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancelPlacing();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [placingTask, onCancelPlacing]);
 
   const minuteToPx = (m: number) => ((m - winStart) / 60) * HOUR_PX;
   const msToPx = (day: Date, ms: number) => minuteToPx((ms - startOfDay(day).getTime()) / 60_000);
@@ -186,6 +223,16 @@ export function CalendarView(props: Props) {
           </div>
         )}
       </div>
+
+      {/* Placement hint: shown while a task is armed for click-to-place */}
+      {placingTask && (
+        <div className="flex items-center gap-2 border-t border-neon/40 bg-neon/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-neon">
+          <CalendarClock className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">
+            Click a time to place “{placingTask.title}” ({formatHM(placingTask.estimateMinutes * 60_000)}) · Esc to cancel
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -313,23 +360,36 @@ function DayColumn(
   const dayStart = startOfDay(day).getTime();
   const dayEnd = dayStart + 86_400_000;
 
-  const items: { kind: "event" | "focus"; start: string; end: string; event?: CalendarEvent; block?: FocusBlock }[] =
-    useMemo(() => {
-      const ev = props.events
-        .filter((e) => !e.allDay)
-        .filter((e) => {
-          const iv = eventInterval(e);
-          return iv.end > dayStart && iv.start < dayEnd;
-        })
-        .map((e) => ({ kind: "event" as const, start: e.start, end: e.end, event: e }));
-      const fb = props.focusBlocks
-        .filter((b) => {
-          const iv = eventInterval(b);
-          return iv.end > dayStart && iv.start < dayEnd;
-        })
-        .map((b) => ({ kind: "focus" as const, start: b.start, end: b.end, block: b }));
-      return [...ev, ...fb];
-    }, [props.events, props.focusBlocks, dayStart, dayEnd]);
+  const items: {
+    kind: "event" | "focus" | "task";
+    start: string;
+    end: string;
+    event?: CalendarEvent;
+    block?: FocusBlock;
+    task?: SideTask;
+  }[] = useMemo(() => {
+    const ev = props.events
+      .filter((e) => !e.allDay)
+      .filter((e) => {
+        const iv = eventInterval(e);
+        return iv.end > dayStart && iv.start < dayEnd;
+      })
+      .map((e) => ({ kind: "event" as const, start: e.start, end: e.end, event: e }));
+    const fb = props.focusBlocks
+      .filter((b) => {
+        const iv = eventInterval(b);
+        return iv.end > dayStart && iv.start < dayEnd;
+      })
+      .map((b) => ({ kind: "focus" as const, start: b.start, end: b.end, block: b }));
+    const tk = props.tasks
+      .filter((t) => t.start !== null && t.end !== null)
+      .filter((t) => {
+        const iv = eventInterval({ start: t.start!, end: t.end! });
+        return iv.end > dayStart && iv.start < dayEnd;
+      })
+      .map((t) => ({ kind: "task" as const, start: t.start!, end: t.end!, task: t }));
+    return [...ev, ...fb, ...tk];
+  }, [props.events, props.focusBlocks, props.tasks, dayStart, dayEnd]);
 
   const laid = layoutColumns(items);
 
@@ -339,10 +399,13 @@ function DayColumn(
     return Math.max(winStart, Math.min(winEnd, Math.round(m / SNAP_MIN) * SNAP_MIN));
   };
 
+  const placingTask = props.placingId === null ? null : props.tasks.find((t) => t.id === props.placingId) ?? null;
+
   const onMouseDown = (e: ReactMouseEvent) => {
     if (e.button !== 0 || e.target !== e.currentTarget) return;
     const m = yToMinute(e.clientY);
-    setDrag({ a: m, b: m + SNAP_MIN * 2 });
+    // While a task is armed, a click lands it here instead of starting a focus block.
+    setDrag({ a: m, b: m + (placingTask ? placingTask.estimateMinutes : SNAP_MIN * 2) });
   };
   const onMouseMove = (e: ReactMouseEvent) => {
     if (!drag) return;
@@ -353,8 +416,27 @@ function DayColumn(
     const s = Math.min(drag.a, drag.b);
     const en = Math.max(drag.a, drag.b);
     setDrag(null);
+    if (placingTask) {
+      // The task's own estimate sets the length; only the drop time matters.
+      props.onPlaceTask(placingTask, new Date(dayStart + s * 60_000));
+      return;
+    }
     if (en - s < SNAP_MIN) return;
     props.onCreateFocus(new Date(dayStart + s * 60_000), new Date(dayStart + en * 60_000));
+  };
+
+  const onDragOver = (e: ReactDragEvent) => {
+    if (!e.dataTransfer.types.includes(SIDE_TASK_DRAG_TYPE)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  };
+  const onDrop = (e: ReactDragEvent) => {
+    const raw = e.dataTransfer.getData(SIDE_TASK_DRAG_TYPE);
+    if (!raw) return;
+    const task = props.tasks.find((t) => String(t.id) === raw);
+    if (!task) return;
+    e.preventDefault();
+    props.onPlaceTask(task, new Date(dayStart + yToMinute(e.clientY) * 60_000));
   };
 
   const nowMin = (now - dayStart) / 60_000;
@@ -362,11 +444,14 @@ function DayColumn(
   return (
     <div
       ref={ref}
+      data-day={`${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`}
       className={cn("relative select-none border-l border-line", isToday && "bg-neon/[0.02]", !working && "bg-void/40")}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={() => setDrag(null)}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
     >
       {hours.map((m) => (
         <div key={m} className="pointer-events-none absolute inset-x-0 border-t border-line/70" style={{ top: minuteToPx(m) }} />
@@ -465,6 +550,73 @@ function DayColumn(
           width: `calc(${100 / cols}% - 4px)`,
         };
 
+        if (item.kind === "task" && item.task) {
+          const t = item.task;
+          const done = isSideTaskDone(t, now);
+          return (
+            <div
+              key={`t-${t.id}`}
+              className={cn(
+                "group absolute overflow-hidden rounded border border-amber-400/70 bg-amber-400/15 px-1.5 py-1 text-[11px] text-ink",
+                done && "opacity-60",
+              )}
+              style={style}
+              title={`${t.title} · ${formatHM(t.estimateMinutes * 60_000)}${
+                t.blocksWork ? " · blocks work" : " · flexible"
+              }${t.completedAt ? ` · finished ${formatTime(t.completedAt)}` : ""}`}
+            >
+              <div className="flex items-center gap-1 font-medium text-amber-300">
+                <span className="truncate" style={done ? { textDecoration: "line-through" } : undefined}>
+                  {t.title}
+                </span>
+                {t.blocksWork && <Briefcase className="h-3 w-3 shrink-0 opacity-70" />}
+              </div>
+              <div className="font-mono text-[10px] text-mut">
+                {formatTime(t.start!)}–{formatTime(t.end!)}
+                {done && " · done"}
+              </div>
+              <div className="absolute right-1 top-1 hidden gap-1 group-hover:flex">
+                {!done && (
+                  <button
+                    type="button"
+                    className="rounded bg-panel p-0.5 text-mut hover:text-neon"
+                    title="Mark done now"
+                    onClick={() => props.onCompleteTask(t, true)}
+                  >
+                    <Check className="h-3 w-3" />
+                  </button>
+                )}
+                {t.completedAt !== null && (
+                  <button
+                    type="button"
+                    className="rounded bg-panel p-0.5 text-mut hover:text-neon"
+                    title="Undo — put it back on its slot"
+                    onClick={() => props.onCompleteTask(t, false)}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="rounded bg-panel p-0.5 text-mut hover:text-neon"
+                  title="Move this task"
+                  onClick={() => props.onMoveTask(t)}
+                >
+                  <CalendarClock className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-panel p-0.5 text-mut hover:text-destructive"
+                  title="Delete task"
+                  onClick={() => props.onDeleteTask(t)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          );
+        }
+
         if (item.kind === "focus" && item.block) {
           const b = item.block;
           return (
@@ -551,7 +703,10 @@ function DayColumn(
       {/* Drag preview */}
       {drag && (
         <div
-          className="pointer-events-none absolute inset-x-1 rounded border border-neon bg-neon/20"
+          className={cn(
+            "pointer-events-none absolute inset-x-1 rounded border",
+            placingTask ? "border-amber-400 bg-amber-400/20" : "border-neon bg-neon/20",
+          )}
           style={{
             top: minuteToPx(Math.min(drag.a, drag.b)),
             height: Math.abs(minuteToPx(drag.b) - minuteToPx(drag.a)),
@@ -592,12 +747,23 @@ function SessionBlock({
   const now = Date.now();
   const session = band.session;
   const running = session.end === null;
+  const studying = (session.type ?? "work") === "study";
   const sessionEnd = session.end ? new Date(session.end).getTime() : now;
   const trackedMs = trackedMsOf(session, now);
   const pausedMs = Math.max(0, sessionEnd - new Date(session.start).getTime() - trackedMs);
   const last = session.segments[session.segments.length - 1];
   const paused = running && last?.type === "pause" && last.end === null;
-  const stateLabel = paused ? "paused" : running ? "working" : "tracked";
+  const stateLabel = studying
+    ? paused
+      ? "study paused"
+      : running
+        ? "studying"
+        : "studied"
+    : paused
+      ? "paused"
+      : running
+        ? "working"
+        : "tracked";
   const sessionLabel = `${formatTime(session.start)}–${session.end ? formatTime(session.end) : "now"}`;
   const pieceLabel = `${formatTime(new Date(band.start).toISOString())}–${formatTime(
     new Date(band.end).toISOString(),
@@ -610,16 +776,25 @@ function SessionBlock({
           type="button"
           onMouseDown={(e) => e.stopPropagation()}
           style={style}
-          title={`${session.note || "Tracked session"} · ${pieceLabel} · ${formatHM(trackedMs)} tracked${
-            pausedMs > 0 ? ` · ${formatHM(pausedMs)} paused` : ""
-          }`}
+          title={`${session.note || (studying ? "Study session" : "Tracked session")} · ${pieceLabel} · ${formatHM(
+            trackedMs,
+          )} tracked${pausedMs > 0 ? ` · ${formatHM(pausedMs)} paused` : ""}`}
           className={cn(
-            "absolute overflow-hidden rounded-sm border-l-2 border-neon/70 bg-neon/10 px-1.5 py-0.5 text-left text-[10px] text-neon transition hover:bg-neon/20",
-            running && !paused && "ring-1 ring-neon/40",
+            "absolute overflow-hidden rounded-sm border-l-2 px-1.5 py-0.5 text-left text-[10px] transition",
+            studying
+              ? "border-amber-300/70 bg-amber-300/10 text-amber-300 hover:bg-amber-300/20"
+              : "border-neon/70 bg-neon/10 text-neon hover:bg-neon/20",
+            running && !paused && (studying ? "ring-1 ring-amber-300/40" : "ring-1 ring-neon/40"),
           )}
         >
           <span className="flex items-center gap-1 font-mono uppercase tracking-wider">
-            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-neon", running && !paused && "animate-pulse")} />
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                studying ? "bg-amber-300" : "bg-neon",
+                running && !paused && "animate-pulse",
+              )}
+            />
             {stateLabel}
           </span>
           {band.end - band.start >= 45 * 60_000 && (
@@ -629,9 +804,19 @@ function SessionBlock({
       </PopoverTrigger>
       <PopoverContent align="start" className="max-h-[75vh] w-64 overflow-y-auto border-line bg-panel text-ink">
         <div className="font-mono text-[10px] uppercase tracking-widest text-mut">
-          {paused ? "Session paused" : running ? "In session" : "Tracked session"}
+          {studying
+            ? paused
+              ? "Study paused"
+              : running
+                ? "Study in session"
+                : "Study session"
+            : paused
+              ? "Session paused"
+              : running
+                ? "In session"
+                : "Tracked session"}
         </div>
-        <div className="mt-1 text-sm font-medium">{session.note || "Untitled session"}</div>
+        <div className="mt-1 text-sm font-medium">{session.note || (studying ? "Studying" : "Untitled session")}</div>
         <div className="mt-1 font-mono text-[11px] text-mut">
           {sessionLabel} · {formatHM(trackedMs)} tracked
           {pausedMs > 0 && ` · ${formatHM(pausedMs)} paused`}
@@ -644,6 +829,7 @@ function SessionBlock({
               start: session.start,
               end: session.end,
               note: session.note,
+              type: session.type ?? "work",
               source: session.source,
               pausedMs,
               pausedAt: null,

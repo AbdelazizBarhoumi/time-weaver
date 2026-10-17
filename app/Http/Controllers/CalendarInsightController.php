@@ -139,9 +139,15 @@ class CalendarInsightController extends Controller
             ], 502);
         }
 
+        // A recommendation to place a side task hides itself in a [[PLAN:…]] marker.
+        // Pull those out so the client can offer a one-click "Place" instead of
+        // showing the raw syntax.
+        $parsed = $this->gemini->extractPlans($reply);
+
         return response()->json([
             'available' => true,
-            'reply' => $reply,
+            'reply' => $parsed['text'],
+            'suggestions' => $parsed['plans'],
             'generatedAt' => now()->toIso8601String(),
         ]);
     }

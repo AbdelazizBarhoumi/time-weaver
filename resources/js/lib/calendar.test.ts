@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  blockingTaskIntervals,
   buildCoachContext,
   computeDayBudget,
   computeDayInsights,
   computeWorkableTimeLeft,
   freeIntervals,
   isRequiredDay,
+  isSideTaskDone,
   isWorkDay,
   mergeIntervals,
   monthGrid,
@@ -14,6 +16,9 @@ import {
   sameDay,
   sessionBands,
   sessionWorkIntervals,
+  sideTaskEnd,
+  sideTaskStatus,
+  sortSideTasks,
   startOfWeek,
   subtractIntervals,
   summarizeDay,
@@ -23,6 +28,7 @@ import {
   type CalendarSession,
   type CalendarSettings,
   type Interval,
+  type SideTask,
 } from "@/lib/calendar";
 import type { Segment } from "@/lib/tracker";
 import type { ApiMonthStats, ApiStats } from "@/lib/api";
@@ -61,6 +67,20 @@ function makeEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
     allDay: false,
     isWork: false,
     workSource: null,
+    ...overrides,
+  };
+}
+
+function makeTask(overrides: Partial<SideTask> = {}): SideTask {
+  return {
+    id: 1,
+    title: "Clean the room",
+    estimateMinutes: 30,
+    blocksWork: true,
+    start: null,
+    end: null,
+    completedAt: null,
+    done: false,
     ...overrides,
   };
 }
@@ -226,6 +246,19 @@ describe("computeDayBudget", () => {
     expect(budget.remainingMs).toBe(8 * 3_600_000);
     expect(budget.slots.some((s) => s.suggested)).toBe(true);
   });
+
+  it("shrinks the free gaps by a placed blocking task without touching the goal", () => {
+    const window = { start: new Date(at(wednesday, 12)).getTime(), end: new Date(at(wednesday, 17)).getTime() };
+    const extraBusy = blockingTaskIntervals([makeTask({ start: at(wednesday, 14), end: at(wednesday, 15) })], window);
+
+    const budget = computeDayBudget({ day: wednesday, now: noon, events: [], focusBlocks: [], settings, extraBusy });
+
+    // A task is not work, so what you still owe is unchanged…
+    expect(budget.remainingMs).toBe(8 * 3_600_000);
+    // …but it does eat an hour of the five still free today.
+    expect(budget.freeLeftMs).toBe(4 * 3_600_000);
+    expect(budget.overbooked).toBe(true);
+  });
 });
 
 describe("computeWorkableTimeLeft", () => {
@@ -304,6 +337,88 @@ describe("computeWorkableTimeLeft", () => {
     const workable = computeWorkableTimeLeft({ day: saturday, now: noon, events: [], settings });
     expect(workable.isWorkDay).toBe(false);
     expect(workable.isRequiredDay).toBe(false);
+  });
+
+  it("counts a placed blocking task as busy time", () => {
+    const window = { start: new Date(at(wednesday, 12)).getTime(), end: new Date(at(wednesday, 17)).getTime() };
+    const extraBusy = blockingTaskIntervals(
+      [makeTask({ start: at(wednesday, 14), end: at(wednesday, 15, 30) })],
+      window,
+    );
+
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [], settings, extraBusy });
+
+    expect(workable.busyMs).toBe(90 * 60_000);
+    expect(workable.remainingMs).toBe(5 * 3_600_000 - 90 * 60_000);
+  });
+});
+
+describe("side task helpers", () => {
+  const noon = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 12, 0).getTime();
+
+  it("treats a placed task whose slot has passed as done", () => {
+    const task = makeTask({ start: at(wednesday, 9), end: at(wednesday, 11) });
+    expect(isSideTaskDone(task, noon)).toBe(true);
+  });
+
+  it("leaves a placed task whose slot is still ahead live", () => {
+    const task = makeTask({ start: at(wednesday, 15), end: at(wednesday, 16) });
+    expect(isSideTaskDone(task, noon)).toBe(false);
+  });
+
+  it("marks a hand-ticked task done even before its slot starts", () => {
+    const task = makeTask({ start: at(wednesday, 15), end: at(wednesday, 16), completedAt: at(wednesday, 12) });
+    expect(isSideTaskDone(task, noon)).toBe(true);
+  });
+
+  it("never marks an unplaced task done just because time passes", () => {
+    expect(isSideTaskDone(makeTask(), noon)).toBe(false);
+  });
+
+  it("names the three states", () => {
+    expect(sideTaskStatus(makeTask(), noon)).toBe("unscheduled");
+    expect(sideTaskStatus(makeTask({ start: at(wednesday, 15), end: at(wednesday, 16) }), noon)).toBe("scheduled");
+    expect(sideTaskStatus(makeTask({ start: at(wednesday, 9), end: at(wednesday, 10) }), noon)).toBe("done");
+  });
+
+  it("reports the slot end only for a placed task", () => {
+    expect(sideTaskEnd(makeTask())).toBeNull();
+    expect(sideTaskEnd(makeTask({ end: at(wednesday, 11) }))).toBe(new Date(at(wednesday, 11)).getTime());
+  });
+
+  it("lists the unplaced tasks first, then the day's schedule", () => {
+    const sorted = sortSideTasks([
+      makeTask({ id: 3, start: at(wednesday, 15) }),
+      makeTask({ id: 1 }),
+      makeTask({ id: 2, start: at(wednesday, 9) }),
+      makeTask({ id: 4 }),
+    ]);
+
+    expect(sorted.map((task) => task.id)).toEqual([1, 4, 2, 3]);
+  });
+
+  it("turns blocking, placed tasks into busy intervals clipped to the window", () => {
+    const window = { start: new Date(at(wednesday, 12)).getTime(), end: new Date(at(wednesday, 17)).getTime() };
+    const intervals = blockingTaskIntervals(
+      [
+        // Starts before the window: clipped at the front.
+        makeTask({ id: 1, start: at(wednesday, 11), end: at(wednesday, 13) }),
+        // Unplaced: ignored.
+        makeTask({ id: 2 }),
+        // Flexible: ignored.
+        makeTask({ id: 3, blocksWork: false, start: at(wednesday, 14), end: at(wednesday, 15) }),
+        // Entirely outside the window: dropped.
+        makeTask({ id: 4, start: at(saturday, 9), end: at(saturday, 10) }),
+        // Fully inside: kept whole.
+        makeTask({ id: 5, start: at(wednesday, 15), end: at(wednesday, 16) }),
+      ],
+      window,
+    );
+
+    expect(intervals).toEqual([
+      { start: new Date(at(wednesday, 12)).getTime(), end: new Date(at(wednesday, 13)).getTime() },
+      { start: new Date(at(wednesday, 15)).getTime(), end: new Date(at(wednesday, 16)).getTime() },
+    ]);
   });
 });
 
@@ -413,6 +528,18 @@ describe("computeDayInsights", () => {
     expect(intel.facts.eventTitles).toContain("Client sync");
     expect(intel.facts.backlogHours).toBe(3.5);
     expect(intel.facts.perDayNeededHours).toBe(4);
+  });
+
+  it("counts a placed blocking task towards a fully booked day", () => {
+    const window = { start: new Date(at(wednesday, 12)).getTime(), end: new Date(at(wednesday, 17)).getTime() };
+    const extraBusy = blockingTaskIntervals([makeTask({ start: at(wednesday, 12), end: at(wednesday, 17) })], window);
+
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [], extraBusy });
+
+    expect(intel.insights.map((i) => i.id)).toContain("fully-booked");
+    expect(intel.facts.freeMs).toBe(0);
+    // Tasks are not meetings, so the coach's meeting list stays empty.
+    expect(intel.facts.meetings).toEqual([]);
   });
 });
 
@@ -672,5 +799,125 @@ describe("buildCoachContext", () => {
     expect(ctx.backlogHours).toBeNull();
     expect(ctx.streak).toBeNull();
     expect(ctx.week?.doneHours).toBe(0);
+  });
+
+  it("sends no tasks when there are none", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon });
+
+    expect(ctx.tasks).toEqual([]);
+    expect(ctx.tasksSummary).toEqual({
+      total: 0,
+      unplaced: 0,
+      scheduled: 0,
+      done: 0,
+      unplacedEstimateHours: 0,
+      blockingHoursToday: 0,
+    });
+  });
+
+  it("sends the live tasks plus the ones already finished today", () => {
+    const ctx = buildCoachContext({
+      intel,
+      settings,
+      now: noon,
+      tasks: [
+        // Unplaced, still to do.
+        makeTask({ id: 1, title: "Clean the room" }),
+        // Placed later today.
+        makeTask({ id: 2, start: at(wednesday, 15), end: at(wednesday, 16) }),
+        // Finished today — worth telling the coach so it does not re-suggest it.
+        makeTask({ id: 3, start: at(wednesday, 9), end: at(wednesday, 10), completedAt: at(wednesday, 10) }),
+        // Finished on an earlier day — the coach does not need it.
+        makeTask({ id: 4, start: at(saturday, 9), end: at(saturday, 10), completedAt: at(saturday, 10) }),
+      ],
+    });
+
+    expect(ctx.tasks.map((task) => task.id)).toEqual([1, 2, 3]);
+    expect(ctx.tasks.find((task) => task.id === 3)?.done).toBe(true);
+    expect(ctx.tasksSummary).toEqual({
+      total: 4,
+      unplaced: 1,
+      scheduled: 1,
+      done: 2,
+      unplacedEstimateHours: 0.5,
+      blockingHoursToday: 1,
+    });
+  });
+
+  it("measures the blocking task time still ahead today", () => {
+    const ctx = buildCoachContext({
+      intel,
+      settings,
+      now: noon,
+      tasks: [
+        // Already over by noon: contributes nothing to the hours still ahead.
+        makeTask({ id: 1, start: at(wednesday, 9), end: at(wednesday, 11) }),
+        // Flexible: never blocks work.
+        makeTask({ id: 2, blocksWork: false, start: at(wednesday, 13), end: at(wednesday, 14) }),
+        // 14:00 → 15:30 still ahead of us.
+        makeTask({ id: 3, start: at(wednesday, 14), end: at(wednesday, 15, 30) }),
+      ],
+    });
+
+    expect(ctx.tasksSummary.blockingHoursToday).toBe(1.5);
+  });
+
+  it("caps how many tasks it sends to keep the prompt bounded", () => {
+    const many = Array.from({ length: 45 }, (_, i) => makeTask({ id: i + 1, title: `Task ${i + 1}` }));
+    const ctx = buildCoachContext({ intel, settings, now: noon, tasks: many });
+
+    expect(ctx.tasks).toHaveLength(40);
+    expect(ctx.tasksSummary.total).toBe(45);
+    expect(ctx.tasksSummary.unplaced).toBe(45);
+  });
+});
+
+describe("study sessions", () => {
+  const noon = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 12, 0).getTime();
+  /** A study block from 13:00 to 15:00, as the calendar route feeds it — busy time. */
+  const studyBusy: Interval[] = [
+    { start: new Date(at(wednesday, 13)).getTime(), end: new Date(at(wednesday, 15)).getTime() },
+  ];
+
+  it("blocks the remaining work window like a meeting would", () => {
+    const workable = computeWorkableTimeLeft({ day: wednesday, now: noon, events: [], settings, extraBusy: studyBusy });
+
+    expect(workable.busyMs).toBe(2 * 3_600_000);
+    expect(workable.remainingMs).toBe(3 * 3_600_000);
+  });
+
+  it("shrinks the free gaps without touching the daily goal", () => {
+    const budget = computeDayBudget({
+      day: wednesday,
+      now: noon,
+      events: [],
+      focusBlocks: [],
+      settings,
+      extraBusy: studyBusy,
+    });
+
+    // What you still owe is unchanged…
+    expect(budget.remainingMs).toBe(8 * 3_600_000);
+    // …but the two studied hours are no longer free to suggest.
+    expect(budget.freeLeftMs).toBe(3 * 3_600_000);
+  });
+
+  it("is still drawn as working time on the calendar", () => {
+    const study = session({ id: 9, start: at(wednesday, 9), end: at(wednesday, 11), type: "study" });
+    const now = new Date(at(wednesday, 18)).getTime();
+
+    expect(sessionBands([study], wednesday, now)).toHaveLength(1);
+    expect(sessionWorkIntervals(study, now)).toEqual([
+      { start: new Date(at(wednesday, 9)).getTime(), end: new Date(at(wednesday, 11)).getTime() },
+    ]);
+  });
+
+  it("keeps study time out of the day summary goal", () => {
+    // The calendar route never passes study intervals as tracked time, so the
+    // goal bar moves only for work.
+    const summary = summarizeDay({ day: wednesday, events: [], focusBlocks: [], trackedIntervals: [], settings });
+
+    expect(summary.doneMs).toBe(0);
+    expect(summary.remainingMs).toBe(8 * 3_600_000);
   });
 });

@@ -54,6 +54,14 @@ class GeminiCoachService
     private const DEAD_STATUSES = ['failed', 'cancelled'];
 
     /**
+     * The line suffix the coach uses to propose a slot for a side task:
+     * `[[PLAN:7|2026-10-20 17:00]]`, with the time on the user's local clock.
+     * The server strips these out of the visible reply and returns them as
+     * structured suggestions, so the client never has to parse prose.
+     */
+    private const PLAN_MARKER = '/\[\[\s*PLAN\s*:\s*(\d+)\s*\|\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?\s*\]\]/i';
+
+    /**
      * Whether an API key has been configured for Gemini.
      */
     public function isConfigured(): bool
@@ -104,6 +112,71 @@ class GeminiCoachService
     }
 
     /**
+     * Ask Gemini where a batch of unscheduled side tasks should go.
+     *
+     * The same stateless call as the chat: the caller sends a fresh snapshot and
+     * the candidate tasks, and the reply carries one `[[PLAN:…]]` marker per
+     * task (see {@see extractPlans()}).
+     *
+     * @param  array<int, array{id: int, title: string, estimateMinutes: int, blocksWork: bool}>  $tasks
+     * @param  array<string, mixed>  $context  A fresh snapshot of the user's day/week/month data.
+     *
+     * @throws RuntimeException when the service is not configured, the request fails, or the reply is unusable.
+     */
+    public function planTasks(array $tasks, array $context): string
+    {
+        if (! $this->isConfigured()) {
+            throw new RuntimeException('Gemini is not configured.');
+        }
+
+        $response = $this->send($this->planPayload($tasks, $context));
+
+        return $this->extractText($response);
+    }
+
+    /**
+     * Split a coach reply into the text the user should see and the placement
+     * proposals hidden in it.
+     *
+     * Every line carrying a `[[PLAN:id|YYYY-MM-DD HH:MM]]` marker becomes a
+     * suggestion, and that marker is removed from the line so the user never
+     * sees the raw syntax. The reason is whatever text shared the line.
+     *
+     * @return array{text: string, plans: array<int, array{taskId: int, start: string, reason: string}>}
+     */
+    public function extractPlans(string $text): array
+    {
+        $plans = [];
+        $kept = [];
+
+        foreach (preg_split('/\R/', $text) ?: [] as $line) {
+            if (preg_match(self::PLAN_MARKER, $line, $matches) !== 1) {
+                $kept[] = $line;
+
+                continue;
+            }
+
+            $reason = trim((string) preg_replace('/\s+/', ' ', (string) preg_replace(self::PLAN_MARKER, '', $line)));
+
+            $plans[] = [
+                'taskId' => (int) $matches[1],
+                // A wall-clock time without an offset: the client reads it as local.
+                'start' => "{$matches[2]}T{$matches[3]}",
+                'reason' => $reason,
+            ];
+
+            if ($reason !== '') {
+                $kept[] = $reason;
+            }
+        }
+
+        return [
+            'text' => trim(implode("\n", $kept)),
+            'plans' => $plans,
+        ];
+    }
+
+    /**
      * The request body: model, system instruction, user input and sampling
      * controls.
      *
@@ -136,6 +209,26 @@ class GeminiCoachService
             'model' => $this->model(),
             'system_instruction' => $this->chatSystemPrompt($context),
             'input' => $this->chatUserPrompt($messages),
+            'generation_config' => $this->generationConfig(),
+            'store' => (bool) config('services.gemini.store', false),
+        ];
+    }
+
+    /**
+     * The request body for a task-placement turn: the same model and sampling
+     * controls, a system instruction carrying the snapshot, and the candidate
+     * tasks in the user input.
+     *
+     * @param  array<int, array{id: int, title: string, estimateMinutes: int, blocksWork: bool}>  $tasks
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function planPayload(array $tasks, array $context): array
+    {
+        return [
+            'model' => $this->model(),
+            'system_instruction' => $this->planSystemPrompt($context),
+            'input' => $this->planUserPrompt($tasks),
             'generation_config' => $this->generationConfig(),
             'store' => (bool) config('services.gemini.store', false),
         ];
@@ -434,9 +527,63 @@ class GeminiCoachService
                 $this->formatUtcOffset($offsetMinutes),
             ),
             'each time into that local clock and never quote a raw ISO timestamp back to the user.',
+            'Side tasks are the user\'s personal to-dos; they are listed in the "tasks" array with an estimate in minutes.',
+            'A task is unplaced when its start is null and it is not done — only those can be given a slot.',
+            'Tasks marked "blocksWork": true occupy the user\'s time; the others are flexible and can be moved or skipped.',
+            'When the user asks where or when to do a task, recommend one concrete local day and time for it.',
+            'Prefer a free gap on a required weekday in the current week while the remaining work still fits;',
+            'if the remaining work for the week will not fit in the free time left, say so plainly and place it next week instead.',
+            'A gap works only if it is at least as long as the task\'s estimate, and it must not overlap a meeting or another task.',
+            'End such a recommendation with the marker [[PLAN:<task id>|<YYYY-MM-DD HH:MM>]], using the user\'s local clock.',
+            'Never add a marker when the user did not ask where to put a task, and only use ids from the tasks array.',
             '',
             'Current snapshot:',
             $json === false ? '{"error":"context could not be encoded"}' : $json,
+        ]);
+    }
+
+    /**
+     * Persona + grounding rules + the data snapshot for a batch placement turn.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function planSystemPrompt(array $context): string
+    {
+        $json = json_encode($context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return implode("\n", [
+            'You are the scheduling assistant inside a work-hours tracker called ShiftGrid.',
+            'You get a snapshot of the user\'s calendar, work hours and workload, plus a list of unscheduled personal tasks.',
+            'The snapshot is the single source of truth: never invent events, hours, days or numbers.',
+            'Propose the best day and time for every task in the list, using only the free time the snapshot supports.',
+            'A gap only works if it is at least as long as the task\'s estimate in minutes.',
+            'Never overlap a meeting or tracked session, and keep the tasks from overlapping each other.',
+            'Prefer the current week: use free gaps on days the user can work, and keep the remaining work for the week in mind.',
+            'If the remaining work for this week will not fit in the free time left, say so and place those tasks next week instead.',
+            'Write exactly one short line per task: the reason first, then the marker.',
+            'The marker is [[PLAN:<task id>|<YYYY-MM-DD HH:MM>]] with the user\'s LOCAL clock time, never UTC.',
+            'Only use ids from the task list below, and never add a marker for a task you did not place.',
+            'Plain text only — no markdown, no headings, no bullet characters, no asterisks.',
+            '',
+            'Current snapshot:',
+            $json === false ? '{"error":"context could not be encoded"}' : $json,
+        ]);
+    }
+
+    /**
+     * The candidate tasks to place, appended after the snapshot in the prompt.
+     *
+     * @param  array<int, array{id: int, title: string, estimateMinutes: int, blocksWork: bool}>  $tasks
+     */
+    private function planUserPrompt(array $tasks): string
+    {
+        $json = json_encode($tasks, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return implode("\n", [
+            'Unscheduled tasks to place (id, title, estimate in minutes, whether they block work time):',
+            $json === false ? '[]' : $json,
+            '',
+            'Propose a slot for each task now.',
         ]);
     }
 

@@ -13,6 +13,7 @@ import {
   formatHM,
   formatTime,
   sessionDurationMs,
+  workSessionsOnly,
   type WorkSession,
 } from "@/lib/tracker";
 import { Button } from "@/components/ui/button";
@@ -48,6 +49,7 @@ function apiToWorkSession(session: ApiWorkSession): WorkSession {
     start: session.start,
     end: session.end,
     note: session.note,
+    type: session.type ?? "work",
     pausedMs: session.pausedMs,
     pausedAt: session.pausedAt,
     segments: session.segments,
@@ -100,7 +102,8 @@ function DayDetailPage() {
 
   const { data: apiSessions = loaderSessions } = useDaySessions(dateKey);
   const sessions = apiSessions.map(apiToWorkSession);
-  const totalMs = sessions.reduce(
+  // The daily goal bar is work-only; study sessions are listed but not counted.
+  const totalMs = workSessionsOnly(sessions).reduce(
     (total: number, session: WorkSession) => total + sessionDurationMs(session),
     0,
   );
@@ -342,8 +345,16 @@ function DayDetailPage() {
                             )}
 
                             {running && !session.pausedAt && (
-                              <span className="ml-2 flex items-center gap-1 text-[10px] text-neon animate-pulse">
-                                <span className="h-1.5 w-1.5 rounded-full bg-neon" />
+                              <span
+                                className={`ml-2 flex items-center gap-1 text-[10px] animate-pulse ${
+                                  session.type === "study" ? "text-amber-300" : "text-neon"
+                                }`}
+                              >
+                                <span
+                                  className={`h-1.5 w-1.5 rounded-full ${
+                                    session.type === "study" ? "bg-amber-300" : "bg-neon"
+                                  }`}
+                                />
                                 Live
                               </span>
                             )}
@@ -351,6 +362,14 @@ function DayDetailPage() {
                         </div>
 
                         <div className="mt-1 font-mono text-[10px] text-mut">
+                          {session.type === "study" && (
+                            <span
+                              className="mr-1 rounded bg-amber-300/10 px-1 py-0.5 text-[9px] uppercase tracking-wider text-amber-300"
+                              title="Study session — blocks your work window, never counts toward work goals"
+                            >
+                              study
+                            </span>
+                          )}
                           {session.note || (running ? "active" : "—")}
                         </div>
                       </div>

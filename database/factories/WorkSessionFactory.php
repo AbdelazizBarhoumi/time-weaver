@@ -83,6 +83,13 @@ class WorkSessionFactory extends Factory
         ]);
     }
 
+    public function study(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'type' => 'study',
+        ]);
+    }
+
     public function paused(): static
     {
         return $this->state(fn (array $attributes) => [
