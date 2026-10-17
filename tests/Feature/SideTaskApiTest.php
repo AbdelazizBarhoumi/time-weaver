@@ -357,6 +357,66 @@ class SideTaskApiTest extends TestCase
         });
     }
 
+    public function test_plan_anchors_the_model_to_the_user_s_local_clock_and_day(): void
+    {
+        SideTask::factory()->for($this->user)->create(['title' => 'Clean the room']);
+
+        $this->fakeReply('Later today works. [[PLAN:1|2026-10-14 15:00]]');
+
+        $this->postJson('/api/side-tasks/plan', [
+            'context' => [
+                'now' => '2026-10-14T12:00:00.000Z',
+                'timeZone' => 'Europe/Berlin',
+                'utcOffsetMinutes' => 120,
+            ],
+        ])->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $system = $request['system_instruction'];
+
+            // 12:00 UTC is 14:00 in Berlin, on a Wednesday — spelled out, so the
+            // model never has to derive the weekday from a bare date string.
+            return str_contains($system, 'Today is Wednesday, 14 October 2026')
+                && str_contains($system, 'the local time now is 14:00')
+                && str_contains($system, 'Every timestamp is ISO-8601 in UTC')
+                && str_contains($system, 'Never propose a day earlier than today')
+                && str_contains($system, 'never propose a time that has already passed')
+                && str_contains($system, 'week.days');
+        });
+    }
+
+    public function test_plan_carries_the_week_day_breakdown_to_the_model(): void
+    {
+        SideTask::factory()->for($this->user)->create(['title' => 'Clean the room']);
+
+        $this->fakeReply('Done. [[PLAN:1|2026-10-14 15:00]]');
+
+        $context = [
+            'now' => '2026-10-14T12:00:00.000Z',
+            'timeZone' => 'Europe/Berlin',
+            'week' => [
+                'days' => [
+                    [
+                        'dayKey' => '2026-10-15',
+                        'weekday' => 'Thursday',
+                        'isToday' => false,
+                        'isWorkDay' => true,
+                        'isRequired' => true,
+                        'windowStart' => '09:00',
+                        'windowEnd' => '17:00',
+                        'busyHours' => 1.5,
+                        'freeHours' => 6.5,
+                    ],
+                ],
+            ],
+        ];
+
+        $this->postJson('/api/side-tasks/plan', ['context' => $context])->assertStatus(200);
+
+        Http::assertSent(fn ($request) => str_contains($request['system_instruction'], '"freeHours": 6.5')
+            && str_contains($request['system_instruction'], '"weekday": "Thursday"'));
+    }
+
     public function test_plan_returns_502_when_gemini_fails(): void
     {
         SideTask::factory()->for($this->user)->create();

@@ -2,10 +2,13 @@
 
 namespace App\Services;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -52,6 +55,13 @@ class GeminiCoachService
 
     /** Interaction statuses that mean the request will never yield text. */
     private const DEAD_STATUSES = ['failed', 'cancelled'];
+
+    /**
+     * Status for an interaction that finished but was cut short, almost always
+     * because thinking plus the reply exceeded `max_output_tokens`. The text is
+     * still usable, so we keep it and log the cause instead of discarding it.
+     */
+    private const INCOMPLETE_STATUS = 'incomplete';
 
     /**
      * The line suffix the coach uses to propose a slot for a side task:
@@ -360,6 +370,15 @@ class GeminiCoachService
             throw new RuntimeException('Gemini asked for a tool call but none are declared.');
         }
 
+        if ($status === self::INCOMPLETE_STATUS) {
+            // The reply is usable but was cut short, so record why rather than
+            // silently presenting a half sentence as a finished answer.
+            Log::warning('Gemini interaction was incomplete (reply truncated)', [
+                'reason' => $this->errorMessage($body),
+                'usage' => $this->usageSummary($body),
+            ]);
+        }
+
         $text = $this->collectModelOutput($body);
 
         if ($text === null || trim($text) === '') {
@@ -408,6 +427,22 @@ class GeminiCoachService
         }
 
         return $chunks === [] ? null : implode("\n", $chunks);
+    }
+
+    /**
+     * A compact usage read-out for a truncated interaction, so the log shows how
+     * much of the reply budget went to thinking versus the visible text.
+     *
+     * @param  array<string, mixed>  $body
+     * @return array<string, int>
+     */
+    private function usageSummary(array $body): array
+    {
+        return [
+            'output_tokens' => (int) data_get($body, 'usage.total_output_tokens', 0),
+            'thought_tokens' => (int) data_get($body, 'usage.total_thought_tokens', 0),
+            'total_tokens' => (int) data_get($body, 'usage.total_tokens', 0),
+        ];
     }
 
     /**
@@ -473,6 +508,8 @@ class GeminiCoachService
             'Reply with 2 to 4 short lines. Each line starts with one of: "Good:", "Watch:", "Do:".',
             'Use plain text only. No markdown, no headings, no bullet characters, no asterisks.',
             'Reference concrete times and durations from the facts. Never invent events.',
+            'Study blocks are fixed commitments that consume the day but never count as work hours.',
+            'Never add study time to the work goal; only mention study when it changes the read-out.',
             'If the day is already handled, say so plainly instead of inventing work.',
         ]);
     }
@@ -515,6 +552,14 @@ class GeminiCoachService
             'still owed today = remaining goal, week left = target minus done, per day = remaining divided by days left.',
             'Never answer "I cannot tell" when a subtraction or division over the snapshot answers the question.',
             'Treat the requiredDays list as the days the user must work; any other weekday is optional, not owed.',
+            'Before confirming a day is free, or that resting or playing is fine, check the whole picture:',
+            'week.remainingHours, month.remainingHours and the month pace so far (daysLeft, perDayNeeded,',
+            'paceDeltaHours), the cumulative backlogHours, and the side',
+            'tasks (tasksSummary.unplaced, unplacedEstimateHours, and any task in the tasks array already placed on that day).',
+            'A weekday that is not required is not owed, but it is not automatically free either: if backlogHours is',
+            'above zero, tasks are still unplaced, or the month pace is behind, do not answer with a bare yes — answer',
+            'the question first, then name the backlog hours, the unplaced task hours and the time still needed per day.',
+            'A non-required day that already has blocking tasks placed on it is not free time; say so.',
             'If the snapshot genuinely lacks something, say so plainly and ask for what you need.',
             'Answer the user\'s actual question first, then add at most one short, concrete suggestion.',
             'Be concise: 1 to 4 short sentences, or a few short lines.',
@@ -527,15 +572,24 @@ class GeminiCoachService
                 $this->formatUtcOffset($offsetMinutes),
             ),
             'each time into that local clock and never quote a raw ISO timestamp back to the user.',
+            $this->localNowLine($context),
+            'Never propose a day earlier than today, and never propose a time that has already passed.',
+            'A slot later on today is still today: say "later today", never name a future weekday for it.',
             'Side tasks are the user\'s personal to-dos; they are listed in the "tasks" array with an estimate in minutes.',
             'A task is unplaced when its start is null and it is not done — only those can be given a slot.',
             'Tasks marked "blocksWork": true occupy the user\'s time; the others are flexible and can be moved or skipped.',
             'When the user asks where or when to do a task, recommend one concrete local day and time for it.',
+            'Pick slots from the week.days list: it gives every day of this week with its window, busy hours and free hours.',
+            'Only propose a day whose freeHours is at least the task\'s estimate in minutes divided by 60.',
             'Prefer a free gap on a required weekday in the current week while the remaining work still fits;',
             'if the remaining work for the week will not fit in the free time left, say so plainly and place it next week instead.',
             'A gap works only if it is at least as long as the task\'s estimate, and it must not overlap a meeting or another task.',
             'End such a recommendation with the marker [[PLAN:<task id>|<YYYY-MM-DD HH:MM>]], using the user\'s local clock.',
             'Never add a marker when the user did not ask where to put a task, and only use ids from the tasks array.',
+            'Study sessions live in the "study" block and as studySessions inside "today"; they are fixed commitments.',
+            'Study time blocks the day like a meeting but is never work: never count it toward work hours or goal progress.',
+            'Today\'s busyMs already includes study time; use studyMs only to say how much of it is study, never add them together.',
+            'When the user asks about studying, answer from the study block: todayHours, remainingTodayHours, weekHours and the named sessions.',
             '',
             'Current snapshot:',
             $json === false ? '{"error":"context could not be encoded"}' : $json,
@@ -551,6 +605,11 @@ class GeminiCoachService
     {
         $json = json_encode($context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
+        $timeZone = is_string($context['timeZone'] ?? null) && $context['timeZone'] !== ''
+            ? $context['timeZone']
+            : 'unknown';
+        $offsetMinutes = $context['utcOffsetMinutes'] ?? null;
+
         return implode("\n", [
             'You are the scheduling assistant inside a work-hours tracker called ShiftGrid.',
             'You get a snapshot of the user\'s calendar, work hours and workload, plus a list of unscheduled personal tasks.',
@@ -558,6 +617,19 @@ class GeminiCoachService
             'Propose the best day and time for every task in the list, using only the free time the snapshot supports.',
             'A gap only works if it is at least as long as the task\'s estimate in minutes.',
             'Never overlap a meeting or tracked session, and keep the tasks from overlapping each other.',
+            'Treat study blocks and tracked sessions as busy time too: never place a task over them.',
+            'Study time never reduces the work the user still owes for the week.',
+            sprintf(
+                'Every timestamp is ISO-8601 in UTC (it ends with Z). The user is in %s (%s), so convert',
+                $timeZone,
+                $this->formatUtcOffset($offsetMinutes),
+            ),
+            'each time into that local clock and never quote a raw ISO timestamp back to the user.',
+            $this->localNowLine($context),
+            'Never propose a day earlier than today, and never propose a time that has already passed.',
+            'A slot later on today is still today: say "later today", never name a future weekday for it.',
+            'Pick slots from the week.days list below: it gives every day of this week with its window, busy hours and free hours.',
+            'Only propose a day whose freeHours is at least the task\'s estimate in minutes divided by 60.',
             'Prefer the current week: use free gaps on days the user can work, and keep the remaining work for the week in mind.',
             'If the remaining work for this week will not fit in the free time left, say so and place those tasks next week instead.',
             'Write exactly one short line per task: the reason first, then the marker.',
@@ -585,6 +657,42 @@ class GeminiCoachService
             '',
             'Propose a slot for each task now.',
         ]);
+    }
+
+    /**
+     * A plain-language anchor for "right now" in the user's own zone.
+     *
+     * The snapshot only carries ISO-8601 UTC, so the model has to do the
+     * timezone and weekday arithmetic itself — and it routinely gets the weekday
+     * wrong, which is how a task on a Saturday ends up "placed on Saturday".
+     * Spelling the local date and clock out removes that whole class of mistake.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function localNowLine(array $context): string
+    {
+        $now = is_string($context['now'] ?? null) ? $context['now'] : '';
+        $timeZone = is_string($context['timeZone'] ?? null) && $context['timeZone'] !== '' ? $context['timeZone'] : 'UTC';
+
+        $stamp = strtotime($now);
+        if ($stamp === false) {
+            return 'The current local date and time are unknown, so never name a weekday for "today".';
+        }
+
+        try {
+            $zone = new DateTimeZone($timeZone);
+        } catch (Throwable) {
+            $zone = new DateTimeZone('UTC');
+        }
+
+        // "@" timestamps are always UTC, so this is a safe base to convert from.
+        $local = (new DateTimeImmutable('@'.$stamp))->setTimezone($zone);
+
+        return sprintf(
+            'Today is %s in the user\'s zone, and the local time now is %s.',
+            $local->format('l, j F Y'),
+            $local->format('H:i'),
+        );
     }
 
     /**

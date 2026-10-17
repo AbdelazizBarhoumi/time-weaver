@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CalendarView, type CalendarDensity } from "@/components/CalendarView";
 import { MonthView } from "@/components/MonthView";
-import { AccountsCard, BudgetCard, Legend, SettingsCard, WorkableTimeCard } from "@/components/CalendarSidebar";
+import { AccountsCard, BudgetCard, Legend, SettingsCard, StudyCard, WorkableTimeCard } from "@/components/CalendarSidebar";
 import { DayIntelligenceCard } from "@/components/DayIntelligenceCard";
 import { CoachChatFab } from "@/components/CoachChatFab";
 import { TodoCard } from "@/components/TodoCard";
@@ -135,6 +135,10 @@ function CalendarPage() {
   const accounts = useCalendarAccounts();
   const settingsQ = useCalendarSettings();
   const eventsQ = useCalendarEvents(rangeFrom, rangeTo);
+  // The coach always reasons about the whole current week, even when the grid is
+  // showing a single day or another month, so it gets its own event range.
+  const coachWeekStart = startOfWeek(new Date(now));
+  const coachWeekQ = useCalendarEvents(coachWeekStart, addDays(coachWeekStart, 7));
   const focusQ = useFocusBlocks(rangeFrom, rangeTo);
   const tasksQ = useSideTasks();
   const sessionsQ = useSessions({ from: rangeFrom.toISOString(), to: rangeTo.toISOString(), per_page: 500 });
@@ -210,14 +214,29 @@ function CalendarPage() {
 
   const todayIntervals = intervalsForDay(todayStart);
   // Only placed, blocking tasks take time away from today; flexible ones do not.
-  // Study sessions sit in the same busy pile: they shrink the remaining work
-  // window and the free gaps, but never the goal itself. `now` is a dependency
-  // so a running study band keeps growing with the clock.
-  const todayExtraBusy = useMemo(
-    () => [...blockingTaskIntervals(tasks, dayInterval(todayStart)), ...studyIntervalsForDay(todayStart)],
+  const todayBlockingTasks = useMemo(
+    () => blockingTaskIntervals(tasks, dayInterval(todayStart)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasks, todayStart.getTime(), sessions, now],
+    [tasks, todayStart.getTime()],
   );
+  // Study sessions shrink the remaining work window and the free gaps, but never
+  // the goal itself. They stay separate from blocking tasks so the coach can name
+  // study time instead of folding it into "busy". `now` is a dependency so a
+  // running study band keeps growing with the clock.
+  const todayStudy = useMemo(
+    () => studyIntervalsForDay(todayStart),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [studyIntervalsForDay, todayStart.getTime(), sessions, now],
+  );
+  const todayStudyBlocks = useMemo(
+    () =>
+      calendarSessions
+        .filter((s) => (s.type ?? "work") === "study" && sameDay(new Date(s.start), todayStart))
+        .map((s) => ({ title: s.note || "Study", start: s.start, end: s.end ?? new Date(now).toISOString() })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [calendarSessions, todayStart.getTime(), now],
+  );
+  const todayBusy = useMemo(() => [...todayBlockingTasks, ...todayStudy], [todayBlockingTasks, todayStudy]);
   const budget = useMemo(
     () =>
       computeDayBudget({
@@ -228,16 +247,16 @@ function CalendarPage() {
         events,
         focusBlocks,
         settings,
-        extraBusy: todayExtraBusy,
+        extraBusy: todayBusy,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, focusBlocks, settings, now, sessions, todayExtraBusy],
+    [events, focusBlocks, settings, now, sessions, todayBusy],
   );
 
   const workable = useMemo(
-    () => computeWorkableTimeLeft({ day: todayStart, now, events, settings, extraBusy: todayExtraBusy }),
+    () => computeWorkableTimeLeft({ day: todayStart, now, events, settings, extraBusy: todayBusy }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, settings, now, todayExtraBusy],
+    [events, settings, now, todayBusy],
   );
 
   const currentMonth = monthlyQ.data?.find((m) => m.isCurrent);
@@ -254,10 +273,12 @@ function CalendarPage() {
         settings,
         backlogHours: statsQ.data?.backlogHours ?? null,
         perDayNeededHours: currentMonth?.perDayNeeded ?? null,
-        extraBusy: todayExtraBusy,
+        extraBusy: todayBlockingTasks,
+        studyIntervals: todayStudy,
+        studyBlocks: todayStudyBlocks,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, focusBlocks, settings, now, sessions, statsQ.data, currentMonth, todayExtraBusy],
+    [events, focusBlocks, settings, now, sessions, statsQ.data, currentMonth, todayBlockingTasks, todayStudy, todayStudyBlocks],
   );
 
   const coachContext = useMemo(
@@ -269,9 +290,11 @@ function CalendarPage() {
         stats: statsQ.data ?? null,
         month: currentMonth ?? null,
         tasks,
+        studySessions: calendarSessions,
+        events: coachWeekQ.data?.events ?? [],
         goalHours: DAILY_GOAL_HOURS,
       }),
-    [intel, settings, now, statsQ.data, currentMonth, tasks],
+    [intel, settings, now, statsQ.data, currentMonth, tasks, calendarSessions, coachWeekQ.data],
   );
 
   // Placement only exists on the day/week grid, so leaving it disarms the task.
@@ -376,6 +399,17 @@ function CalendarPage() {
       {
         onSuccess: () => toast.success(completed ? `Done: ${task.title}` : `Reopened: ${task.title}`),
         onError: () => toast.error("Could not update that task."),
+      },
+    );
+  };
+
+  /** Take a task off the calendar while keeping it in the todo list. */
+  const unplaceTask = (task: SideTask) => {
+    updateTask.mutate(
+      { id: task.id, patch: { start: null } },
+      {
+        onSuccess: () => toast.success(`Moved "${task.title}" back to the list`),
+        onError: () => toast.error("Could not move that task back to the list."),
       },
     );
   };
@@ -560,6 +594,7 @@ function CalendarPage() {
                 onPlaceTask={placeTask}
                 onCompleteTask={completeTask}
                 onDeleteTask={removeTask}
+                onUnplaceTask={unplaceTask}
                 onMoveTask={togglePlacing}
                 onCancelPlacing={() => setPlacingId(null)}
                 onCreateFocus={async (start, end) => {
@@ -604,7 +639,12 @@ function CalendarPage() {
 
         <aside className="min-h-0 space-y-4 lg:overflow-y-auto lg:pr-1">
           <DayIntelligenceCard intel={intel} />
-          <WorkableTimeCard workable={workable} />
+          <WorkableTimeCard workable={workable} studyMs={intel.facts.studyMs} />
+          <StudyCard
+            todayMs={intel.facts.studyTodayMs}
+            weekMs={coachContext.study.weekHours * 3_600_000}
+            blocks={todayStudyBlocks}
+          />
           <TodoCard
             tasks={tasks}
             now={now}

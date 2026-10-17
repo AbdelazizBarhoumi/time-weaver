@@ -16,6 +16,9 @@ class StatsResource extends JsonResource
             'avgPerActiveDay' => $this['avgPerActiveDay'],
             'totalHours' => $this['totalHours'],
             'backlogHours' => $this['backlogHours'],
+            'studyWeekHours' => $this['studyWeekHours'],
+            'studyTotalHours' => $this['studyTotalHours'],
+            'studyBestDayHours' => $this['studyBestDayHours'],
         ];
     }
 }

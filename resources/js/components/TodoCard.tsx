@@ -1,12 +1,25 @@
 import { useState } from "react";
-import { CalendarClock, Check, CheckCircle2, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
+import {
+  CalendarClock,
+  CalendarOff,
+  Check,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  Pencil,
+  Plus,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   SIDE_TASK_DRAG_TYPE,
   isSideTaskDone,
+  isStaleSuggestion,
   sortSideTasks,
+  staleSuggestionNote,
   useCoachStatus,
   useCreateSideTask,
   usePlanSideTasks,
@@ -62,6 +75,9 @@ export function TodoCard({
   const [blocksWork, setBlocksWork] = useState(true);
   const [suggestions, setSuggestions] = useState<CoachPlanSuggestion[]>([]);
   const [planNote, setPlanNote] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editMinutes, setEditMinutes] = useState(30);
 
   const coachStatus = useCoachStatus();
   const create = useCreateSideTask();
@@ -102,6 +118,41 @@ export function TodoCard({
 
   const toggleBlocksWork = (task: SideTask) => {
     update.mutate({ id: task.id, patch: { blocksWork: !task.blocksWork } });
+  };
+
+  /** Take a task off the calendar but keep it in the list. */
+  const unplace = (task: SideTask) => {
+    update.mutate(
+      { id: task.id, patch: { start: null } },
+      {
+        onSuccess: () => toast.success(`Moved "${task.title}" back to the list`),
+        onError: () => toast.error("Could not move that task back to the list."),
+      },
+    );
+  };
+
+  const beginEdit = (task: SideTask) => {
+    setEditingId(task.id);
+    setEditTitle(task.title);
+    setEditMinutes(task.estimateMinutes);
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const saveEdit = (task: SideTask) => {
+    const title = editTitle.trim();
+    if (title === "") return;
+
+    update.mutate(
+      { id: task.id, patch: { title, estimateMinutes: clampMinutes(editMinutes) } },
+      {
+        onSuccess: () => {
+          setEditingId(null);
+          toast.success("Task updated");
+        },
+        onError: () => toast.error("Could not update that task."),
+      },
+    );
   };
 
   const runPlan = () => {
@@ -154,80 +205,167 @@ export function TodoCard({
         <ul className="mt-3 space-y-2">
           {live.map((task) => {
             const armed = placingId === task.id;
+            const editing = editingId === task.id;
             return (
               <li
                 key={task.id}
-                draggable
+                // The row drags to place the task; the edit fields switch it off
+                // so typing does not start a drag.
+                draggable={!editing}
                 onDragStart={(event) => {
+                  if (editing) {
+                    event.preventDefault();
+                    return;
+                  }
                   event.dataTransfer.setData(SIDE_TASK_DRAG_TYPE, String(task.id));
                   event.dataTransfer.effectAllowed = "move";
                 }}
-                title="Drag onto a day to schedule it"
+                title={editing ? undefined : "Drag onto a day to schedule it"}
                 className={cn(
                   "group flex items-start gap-2 rounded border px-2 py-1.5",
                   armed ? "border-neon bg-neon/5" : "border-line bg-void/40",
                 )}
               >
-                <button
-                  type="button"
-                  onClick={() => setCompleted(task, true)}
-                  title="Mark done"
-                  className="mt-0.5 shrink-0 text-mut transition-colors hover:text-neon"
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                </button>
-
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm text-ink">{task.title}</div>
-                  <div className="font-mono text-[10px] text-mut">
-                    {formatHM(task.estimateMinutes * 60_000)}
-                    {" · "}
+                {editing ? (
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <input
+                      value={editTitle}
+                      onChange={(event) => setEditTitle(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") saveEdit(task);
+                        if (event.key === "Escape") cancelEdit();
+                      }}
+                      aria-label="Edit task title"
+                      draggable={false}
+                      onDragStart={(event) => event.preventDefault()}
+                      className="w-full rounded border border-line bg-void px-2 py-1 text-sm text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    />
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-mut">
+                        <input
+                          type="number"
+                          min={MIN_ESTIMATE_MINUTES}
+                          max={MAX_ESTIMATE_MINUTES}
+                          step={5}
+                          value={editMinutes}
+                          onChange={(event) => setEditMinutes(clampMinutes(Number(event.target.value)))}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") saveEdit(task);
+                            if (event.key === "Escape") cancelEdit();
+                          }}
+                          aria-label="Edit estimated minutes"
+                          draggable={false}
+                          onDragStart={(event) => event.preventDefault()}
+                          className="w-16 rounded border border-line bg-void px-1.5 py-0.5 text-right font-mono text-xs text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        />
+                        est
+                      </label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2"
+                        onClick={() => saveEdit(task)}
+                        disabled={update.isPending || editTitle.trim() === ""}
+                        title="Save changes"
+                      >
+                        <Check className="mr-1 h-3 w-3" />
+                        <span className="font-mono text-[10px] uppercase tracking-wider">save</span>
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-mut"
+                        onClick={cancelEdit}
+                        title="Cancel editing"
+                      >
+                        <span className="font-mono text-[10px] uppercase tracking-wider">cancel</span>
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
                     <button
                       type="button"
-                      onClick={() => toggleBlocksWork(task)}
-                      title="Toggle whether this task counts against your work time"
+                      onClick={() => setCompleted(task, true)}
+                      title="Mark done"
+                      className="mt-0.5 shrink-0 text-mut transition-colors hover:text-neon"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                    </button>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-ink">{task.title}</div>
+                      <div className="font-mono text-[10px] text-mut">
+                        {formatHM(task.estimateMinutes * 60_000)}
+                        {" · "}
+                        <button
+                          type="button"
+                          onClick={() => toggleBlocksWork(task)}
+                          title="Toggle whether this task counts against your work time"
+                          className={cn(
+                            "underline-offset-2 hover:underline",
+                            task.blocksWork ? "text-l3" : "text-mut",
+                          )}
+                        >
+                          {task.blocksWork ? "blocks work" : "flexible"}
+                        </button>
+                        {task.start !== null && (
+                          <span className="text-l3">
+                            {" · "}
+                            {dayLabel(task.start, now)} {formatTime(task.start)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => beginEdit(task)}
+                      title="Edit title and estimate"
+                      className="mt-0.5 shrink-0 text-mut opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+
+                    {task.start !== null && (
+                      <button
+                        type="button"
+                        onClick={() => unplace(task)}
+                        title="Take off the calendar but keep the task"
+                        className="mt-0.5 shrink-0 text-mut transition-colors hover:text-ink"
+                      >
+                        <CalendarOff className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => onTogglePlacing(task)}
+                      title={
+                        armed
+                          ? "Cancel placing — press Esc on the calendar"
+                          : task.start === null
+                            ? "Place on the calendar"
+                            : "Move on the calendar"
+                      }
                       className={cn(
-                        "underline-offset-2 hover:underline",
-                        task.blocksWork ? "text-l3" : "text-mut",
+                        "mt-0.5 shrink-0 transition-colors",
+                        armed ? "text-neon" : "text-mut hover:text-ink",
                       )}
                     >
-                      {task.blocksWork ? "blocks work" : "flexible"}
+                      {armed ? <Check className="h-3.5 w-3.5" /> : <CalendarClock className="h-3.5 w-3.5" />}
                     </button>
-                    {task.start !== null && (
-                      <span className="text-l3">
-                        {" · "}
-                        {dayLabel(task.start, now)} {formatTime(task.start)}
-                      </span>
-                    )}
-                  </div>
-                </div>
 
-                <button
-                  type="button"
-                  onClick={() => onTogglePlacing(task)}
-                  title={
-                    armed
-                      ? "Cancel placing — press Esc on the calendar"
-                      : task.start === null
-                        ? "Place on the calendar"
-                        : "Move on the calendar"
-                  }
-                  className={cn(
-                    "mt-0.5 shrink-0 transition-colors",
-                    armed ? "text-neon" : "text-mut hover:text-ink",
-                  )}
-                >
-                  {armed ? <Check className="h-3.5 w-3.5" /> : <CalendarClock className="h-3.5 w-3.5" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onDelete(task)}
-                  title="Delete"
-                  className="mt-0.5 shrink-0 text-mut transition-colors hover:text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => onDelete(task)}
+                      title="Delete"
+                      className="mt-0.5 shrink-0 text-mut transition-colors hover:text-destructive"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                )}
               </li>
             );
           })}
@@ -327,17 +465,32 @@ export function TodoCard({
             {suggestions.map((suggestion) => {
               const task = tasks.find((t) => t.id === suggestion.taskId);
               const start = new Date(suggestion.start);
+              const staleNote = staleSuggestionNote(suggestion.start, now);
               return (
                 <li
                   key={suggestion.taskId}
-                  className="rounded border border-neon/40 bg-neon/5 p-2"
+                  className={cn(
+                    "rounded border p-2",
+                    staleNote ? "border-amber-400/50 bg-amber-400/10" : "border-neon/40 bg-neon/5",
+                  )}
                 >
-                  <div className="font-mono text-[10px] uppercase tracking-wider text-neon">
+                  <div
+                    className={cn(
+                      "font-mono text-[10px] uppercase tracking-wider",
+                      staleNote ? "text-amber-400" : "text-neon",
+                    )}
+                  >
                     {dayLabel(start.toISOString(), now)} {formatTime(start.toISOString())}
                   </div>
                   {task && <div className="mt-0.5 truncate text-xs text-ink">{task.title}</div>}
                   {suggestion.reason && (
                     <div className="mt-1 text-[11px] text-mut">{suggestion.reason}</div>
+                  )}
+                  {staleNote && (
+                    <div className="mt-1 flex items-start gap-1 text-[11px] text-amber-400">
+                      <Clock className="mt-px h-3 w-3 shrink-0" />
+                      <span>{staleNote}</span>
+                    </div>
                   )}
                   <Button
                     variant="outline"

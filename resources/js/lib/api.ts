@@ -61,6 +61,12 @@ export interface ApiStats {
   avgPerActiveDay: number;
   totalHours: number;
   backlogHours: number;
+  /** Study hours this week (Monday start). Study never counts as work. */
+  studyWeekHours: number;
+  /** All-time study hours. */
+  studyTotalHours: number;
+  /** The user's best single study day. */
+  studyBestDayHours: number;
 }
 
 export interface ApiMonthStats {

@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use RuntimeException;
 use Tests\TestCase;
@@ -58,6 +59,9 @@ class CalendarInsightCoachTest extends TestCase
             'meetings' => [
                 ['title' => 'Client sync', 'start' => '2026-10-14T13:00:00.000Z', 'end' => '2026-10-14T14:00:00.000Z'],
             ],
+            'studyMs' => 0,
+            'studyTodayMs' => 0,
+            'studySessions' => [],
             'backlogHours' => 2.5,
             'perDayNeededHours' => 4,
             'eventTitles' => ['Client sync'],
@@ -349,6 +353,24 @@ class CalendarInsightCoachTest extends TestCase
         $this->assertSame('Good: Partial but usable.', (new GeminiCoachService)->coach($this->facts()));
     }
 
+    public function test_service_logs_when_an_interaction_was_truncated(): void
+    {
+        Log::spy();
+
+        Http::fake(['generativelanguage.googleapis.com/*' => Http::response([
+            'status' => 'incomplete',
+            'steps' => [['type' => 'model_output', 'content' => [['type' => 'text', 'text' => 'Good: Partial but usable.']]]],
+            'usage' => ['total_output_tokens' => 4096, 'total_thought_tokens' => 3800, 'total_tokens' => 9200],
+        ])]);
+
+        (new GeminiCoachService)->coach($this->facts());
+
+        Log::shouldHaveReceived('warning')
+            ->once()
+            ->withArgs(fn (string $message, array $context = []): bool => str_contains($message, 'incomplete')
+                && ($context['usage']['thought_tokens'] ?? null) === 3800);
+    }
+
     public function test_service_retries_connection_failures(): void
     {
         Http::fake([
@@ -428,6 +450,14 @@ class CalendarInsightCoachTest extends TestCase
                 'done' => 0,
                 'unplacedEstimateHours' => 0.8,
                 'blockingHoursToday' => 1,
+            ],
+            'study' => [
+                'todayHours' => 1.5,
+                'remainingTodayHours' => 0.5,
+                'weekHours' => 3,
+                'sessions' => [
+                    ['title' => 'German grammar', 'start' => '2026-10-14T11:00:00.000Z', 'end' => '2026-10-14T12:30:00.000Z'],
+                ],
             ],
         ];
     }
@@ -580,6 +610,92 @@ class CalendarInsightCoachTest extends TestCase
                 // The roll-up the coach reasons over.
                 && str_contains($system, '"unplacedEstimateHours": 0.8')
                 && str_contains($system, '"blockingHoursToday": 1');
+        });
+    }
+
+    public function test_chat_tells_the_coach_to_weigh_backlog_and_tasks_before_green_lighting_a_free_day(): void
+    {
+        $this->fakeReply('Your week target is met, but 2.5h of backlog and 0.8h of unplaced tasks remain.');
+
+        $this->postChat(['messages' => [
+            ['role' => 'user', 'content' => 'Can I play tomorrow? It is a free day.'],
+        ]])->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $system = $request['system_instruction'];
+
+            return str_contains($system, 'Before confirming a day is free')
+                // The whole month so far is in scope, not just the week.
+                && str_contains($system, 'month.remainingHours and the month pace so far')
+                && str_contains($system, 'the cumulative backlogHours')
+                && str_contains($system, 'A weekday that is not required is not owed')
+                && str_contains($system, 'do not answer with a bare yes')
+                && str_contains($system, 'already has blocking tasks placed on it is not free time')
+                // The backlog, task roll-up and month pace the coach must reason over reach the model.
+                && str_contains($system, '"backlogHours": 2.5')
+                && str_contains($system, '"unplacedEstimateHours": 0.8')
+                && str_contains($system, '"paceDeltaHours": -4');
+        });
+    }
+
+    public function test_chat_anchors_the_model_to_the_user_s_local_clock_and_day(): void
+    {
+        $this->fakeReply('Plenty of time.');
+
+        $this->postChat()->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $system = $request['system_instruction'];
+
+            // 12:00 UTC is 14:00 in Berlin on a Wednesday.
+            return str_contains($system, 'Today is Wednesday, 14 October 2026')
+                && str_contains($system, 'the local time now is 14:00')
+                && str_contains($system, 'Never propose a day earlier than today')
+                && str_contains($system, 'never propose a time that has already passed')
+                && str_contains($system, 'week.days');
+        });
+    }
+
+    public function test_coach_requires_study_facts(): void
+    {
+        $facts = $this->facts();
+        unset($facts['studyMs'], $facts['studyTodayMs'], $facts['studySessions']);
+
+        $this->postJson('/api/calendar/coach', ['facts' => $facts])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['facts.studyMs', 'facts.studyTodayMs', 'facts.studySessions']);
+    }
+
+    public function test_coach_tells_the_model_study_never_counts_as_work(): void
+    {
+        $this->fakeReply('Good: Plenty of time left.');
+
+        $this->postCoach()->assertStatus(200);
+
+        Http::assertSent(fn ($request) => str_contains($request['system_instruction'], 'Study blocks are fixed commitments')
+            && str_contains($request['system_instruction'], 'Never add study time to the work goal')
+            // The facts carry the study fields through to the model.
+            && str_contains($request['input'], '"studyMs": 0')
+            && str_contains($request['input'], '"studyTodayMs": 0'));
+    }
+
+    public function test_chat_tells_the_coach_study_never_counts_as_work(): void
+    {
+        $this->fakeReply('You have 1.5h of study today, none of it work.');
+
+        $this->postChat()->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $system = $request['system_instruction'];
+
+            return str_contains($system, 'Study time blocks the day like a meeting but is never work')
+                && str_contains($system, 'never count it toward work hours or goal progress')
+                // busyMs already contains study; the coach must not double count.
+                && str_contains($system, 'busyMs already includes study time')
+                // The named study block reaches the model.
+                && str_contains($system, '"todayHours": 1.5')
+                && str_contains($system, '"weekHours": 3')
+                && str_contains($system, 'German grammar');
         });
     }
 

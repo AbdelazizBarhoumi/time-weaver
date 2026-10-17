@@ -7,7 +7,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Briefcase, CalendarClock, Check, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Briefcase, CalendarClock, CalendarOff, Check, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -78,6 +78,8 @@ interface Props {
   /** Tick a task off (or reopen it) straight from the grid. */
   onCompleteTask: (task: SideTask, completed: boolean) => void;
   onDeleteTask: (task: SideTask) => void;
+  /** Take a task off the calendar but keep it in the todo list. */
+  onUnplaceTask: (task: SideTask) => void;
   /** Arm click-to-place for a task, e.g. from its "Move" control. */
   onMoveTask: (task: SideTask) => void;
   /** Leave click-to-place mode. */
@@ -596,6 +598,14 @@ function DayColumn(
                     <RotateCcw className="h-3 w-3" />
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="rounded bg-panel p-0.5 text-mut hover:text-ink"
+                  title="Take off the calendar but keep the task"
+                  onClick={() => props.onUnplaceTask(t)}
+                >
+                  <CalendarOff className="h-3 w-3" />
+                </button>
                 <button
                   type="button"
                   className="rounded bg-panel p-0.5 text-mut hover:text-neon"

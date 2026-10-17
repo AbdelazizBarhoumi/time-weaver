@@ -29,12 +29,16 @@ interface Cell {
   key: string;
   date: Date;
   hours: number;
+  /** Study hours logged that day; shown as an amber marker, off the work scale. */
+  studyHours: number;
   future: boolean;
   dayOffType: "excluded" | "included" | null;
 }
 
 interface Props {
   sessions: WorkSession[];
+  /** Study sessions, shown as an amber marker; they are not part of the work scale. */
+  studySessions?: WorkSession[];
   now: number;
   customDayOffs: CustomDayOff[];
   onToggleDayOff: (dateKey: string) => void;
@@ -46,6 +50,7 @@ interface Props {
 
 export function Heatmap({
   sessions,
+  studySessions = [],
   now,
   customDayOffs,
   onToggleDayOff,
@@ -69,6 +74,17 @@ export function Heatmap({
     return map;
   }, [customDayOffs]);
 
+  // Study hours per day, tracked apart from the work scale so a study-heavy day
+  // never reads as "lots of work". It only powers the amber marker and tooltip.
+  const studyByDay = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of studySessions) {
+      const key = dayKey(s.start);
+      map.set(key, (map.get(key) ?? 0) + sessionDurationMs(s, now));
+    }
+    return map;
+  }, [studySessions, now]);
+
   const { weeks, monthLabels } = useMemo(() => {
     const today = new Date(now);
     const dow = (today.getDay() + 6) % 7;
@@ -86,7 +102,14 @@ export function Heatmap({
         const key = dayKey(date);
         const future = date.getTime() > now;
         const dayOffType = dayOffMap.get(key) ?? null;
-        week.push({ key, date, hours: future ? 0 : hoursForDay(sessions, key, now), future, dayOffType });
+        week.push({
+          key,
+          date,
+          hours: future ? 0 : hoursForDay(sessions, key, now),
+          studyHours: future ? 0 : (studyByDay.get(key) ?? 0),
+          future,
+          dayOffType,
+        });
         cursor.setDate(cursor.getDate() + 1);
       }
       const firstOfWeek = week[0]!.date;
@@ -102,7 +125,7 @@ export function Heatmap({
     }
 
     return { weeks: weeksArr, monthLabels: labels };
-  }, [sessions, now, dayOffMap]);
+  }, [sessions, studyByDay, now, dayOffMap]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -119,14 +142,19 @@ export function Heatmap({
     let text: string;
     const dateLabel = cell.date.toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
     const logged = cell.hours > 0 ? ` · ${cell.hours.toFixed(1)}h logged` : "";
+    const study = cell.studyHours > 0 ? ` · ${cell.studyHours.toFixed(1)}h study` : "";
     if (cell.future) {
       text = cell.date.toLocaleDateString("en", { month: "short", day: "numeric" });
     } else if (cell.dayOffType === "excluded") {
-      text = `Day off, hours excluded${logged} · ${dateLabel}`;
+      text = `Day off, hours excluded${logged}${study} · ${dateLabel}`;
     } else if (cell.dayOffType === "included") {
-      text = `Day off, hours still required${logged} · ${dateLabel}`;
+      text = `Day off, hours still required${logged}${study} · ${dateLabel}`;
+    } else if (cell.hours > 0) {
+      text = `${cell.hours.toFixed(1)}h · ${dateLabel}${study}`;
+    } else if (cell.studyHours > 0) {
+      text = `${cell.studyHours.toFixed(1)}h study · ${dateLabel}`;
     } else {
-      text = `${cell.hours.toFixed(1)}h · ${dateLabel}`;
+      text = `Nothing logged · ${dateLabel}`;
     }
     setTooltip({ text, x, y: c.top - w.top });
   };
@@ -162,12 +190,18 @@ export function Heatmap({
     >
       <div className="flex items-center justify-between">
         <div className="font-mono text-[11px] tracking-[0.2em] text-mut">ACTIVITY · LAST {WEEKS} WEEKS</div>
-        <div className="flex items-center gap-2 font-mono text-[10px] text-mut">
-          less
-          {LEVEL_CLASSES.slice(1).map((c) => (
-            <span key={c} className={`size-3 rounded-sm ${c}`} />
-          ))}
-          more
+        <div className="flex items-center gap-3 font-mono text-[10px] text-mut">
+          <span className="flex items-center gap-1.5">
+            <span className="size-1.5 rounded-full bg-amber-300" />
+            study
+          </span>
+          <span className="flex items-center gap-2">
+            less
+            {LEVEL_CLASSES.slice(1).map((c) => (
+              <span key={c} className={`size-3 rounded-sm ${c}`} />
+            ))}
+            more
+          </span>
         </div>
       </div>
 
@@ -207,7 +241,7 @@ export function Heatmap({
                       const interactive = isCellInteractive(cell);
                       const daySessions = getSessionsForDay(cell.key);
 
-                      let baseClass = `size-3 rounded-[3px] animate-rise ${isToday ? "ring-1 ring-neon" : ""}`;
+                      let baseClass = `relative size-3 rounded-[3px] animate-rise ${isToday ? "ring-1 ring-neon" : ""}`;
 
                       if (cell.future) {
                         baseClass += " bg-line/40 cursor-default";
@@ -215,7 +249,7 @@ export function Heatmap({
                         // A day off renders flat when nothing was logged, but any
                         // hours still recorded that day stay visible (dimmed) so a
                         // worked day never looks like a plain holiday.
-                        baseClass += " relative cursor-pointer hover:ring-2 hover:ring-neon/50";
+                        baseClass += " cursor-pointer hover:ring-2 hover:ring-neon/50";
                         baseClass += level > 0 ? ` ${LEVEL_CLASSES[level]} opacity-40` : " bg-line";
                       } else {
                         baseClass += ` ${LEVEL_CLASSES[level]} ${interactive ? "cursor-pointer hover:ring-2 hover:ring-neon/50" : "cursor-default"}`;
@@ -240,6 +274,12 @@ export function Heatmap({
                                 <span className="absolute inset-0 flex items-center justify-center text-[8px] text-mut/70 select-none">
                                   ⏸
                                 </span>
+                              )}
+                              {cell.studyHours > 0 && (
+                                <span
+                                  className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-amber-300 ring-1 ring-panel"
+                                  title={`${cell.studyHours.toFixed(1)}h study`}
+                                />
                               )}
                             </span>
                           </ContextMenuTrigger>

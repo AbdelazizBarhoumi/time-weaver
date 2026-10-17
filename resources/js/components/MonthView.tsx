@@ -8,6 +8,7 @@ import {
   sessionBands,
   startOfMonth,
   summarizeDay,
+  trackedMsOf,
   type CalendarEvent,
   type CalendarSession,
   type CalendarSettings,
@@ -34,6 +35,20 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
   const cells = useMemo(() => monthGrid(month), [month]);
   const monthIndex = month.getMonth();
   const today = new Date(now);
+
+  // Study hours tracked this month, reported apart from the work goal.
+  const monthStudyMs = useMemo(
+    () =>
+      sessions
+        .filter(
+          (s) =>
+            (s.type ?? "work") === "study" &&
+            new Date(s.start).getMonth() === monthIndex &&
+            new Date(s.start).getFullYear() === month.getFullYear(),
+        )
+        .reduce((sum, s) => sum + trackedMsOf(s, now), 0),
+    [sessions, month, monthIndex, now],
+  );
 
   return (
     <div className="overflow-hidden rounded-lg border border-line bg-panel">
@@ -116,18 +131,28 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
               )}
 
               <div className="flex flex-col gap-0.5 overflow-hidden">
-                {chips.slice(0, 2).map((chip) => (
-                  <span
-                    key={`s-${chip.session.id}`}
-                    className="flex items-center gap-1 truncate rounded bg-neon/10 px-1 py-0.5 text-[10px] text-neon"
-                  >
+                {chips.slice(0, 2).map((chip) => {
+                  const study = (chip.session.type ?? "work") === "study";
+                  return (
                     <span
-                      className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-neon", chip.session.end === null && "animate-pulse")}
-                    />
-                    <span className="font-mono">{formatHM(chip.ms)}</span>
-                    <span className="truncate text-ink/80">{chip.session.note || "Tracked"}</span>
-                  </span>
-                ))}
+                      key={`s-${chip.session.id}`}
+                      className={cn(
+                        "flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px]",
+                        study ? "bg-amber-300/10 text-amber-300" : "bg-neon/10 text-neon",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 shrink-0 rounded-full",
+                          study ? "bg-amber-300" : "bg-neon",
+                          chip.session.end === null && "animate-pulse",
+                        )}
+                      />
+                      <span className="font-mono">{formatHM(chip.ms)}</span>
+                      <span className="truncate text-ink/80">{chip.session.note || (study ? "Study" : "Tracked")}</span>
+                    </span>
+                  );
+                })}
                 {dayEvents.slice(0, eventLimit).map((e) => (
                   <span
                     key={e.id}
@@ -146,8 +171,13 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
           );
         })}
       </div>
-      <div className="px-2 py-1 font-mono text-[10px] text-mut">
-        {startOfMonth(month).toLocaleDateString("en", { month: "long", year: "numeric" })}
+      <div className="flex items-center justify-between px-2 py-1 font-mono text-[10px] text-mut">
+        <span>{startOfMonth(month).toLocaleDateString("en", { month: "long", year: "numeric" })}</span>
+        {monthStudyMs > 0 && (
+          <span className="text-amber-300" title="Study hours this month — never counted as work">
+            {formatHM(monthStudyMs)} study
+          </span>
+        )}
       </div>
     </div>
   );

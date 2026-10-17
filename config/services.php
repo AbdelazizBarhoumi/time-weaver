@@ -54,6 +54,10 @@ return [
     | gemini-3.8-flash). Modern thinking models can take a while to answer, so
     | the timeout default is deliberately generous.
     |
+    | `max_output_tokens` must leave room for the model's thinking, which is
+    | charged against this same budget: too low a ceiling ends the reply
+    | mid-sentence and returns `status: incomplete`.
+    |
     */
 
     'gemini' => [
@@ -63,7 +67,7 @@ return [
         'api_revision' => env('GEMINI_API_REVISION', '2026-05-20'),
         'temperature' => env('GEMINI_TEMPERATURE', 0.6),
         'top_p' => env('GEMINI_TOP_P', 0.95),
-        'max_output_tokens' => env('GEMINI_MAX_OUTPUT_TOKENS', 500),
+        'max_output_tokens' => env('GEMINI_MAX_OUTPUT_TOKENS', 4096),
         'thinking_level' => env('GEMINI_THINKING_LEVEL', 'low'),
         'seed' => env('GEMINI_SEED'),
         'store' => env('GEMINI_STORE', false),

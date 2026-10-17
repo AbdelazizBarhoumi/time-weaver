@@ -33,6 +33,9 @@ const context: CoachContext = {
     goalMs: 28_800_000,
     remainingMs: 28_800_000,
     meetings: [],
+    studyMs: 0,
+    studyTodayMs: 0,
+    studySessions: [],
     backlogHours: 2.5,
     perDayNeededHours: 4,
     eventTitles: [],
@@ -49,6 +52,12 @@ const context: CoachContext = {
     done: 0,
     unplacedEstimateHours: 0,
     blockingHoursToday: 0,
+  },
+  study: {
+    todayHours: 0,
+    remainingTodayHours: 0,
+    weekHours: 0,
+    sessions: [],
   },
 };
 

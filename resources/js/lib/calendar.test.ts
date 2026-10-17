@@ -9,6 +9,7 @@ import {
   freeIntervals,
   isRequiredDay,
   isSideTaskDone,
+  isStaleSuggestion,
   isWorkDay,
   mergeIntervals,
   monthGrid,
@@ -20,6 +21,7 @@ import {
   sideTaskStatus,
   sortSideTasks,
   startOfWeek,
+  staleSuggestionNote,
   subtractIntervals,
   summarizeDay,
   trackedMsOf,
@@ -541,6 +543,62 @@ describe("computeDayInsights", () => {
     // Tasks are not meetings, so the coach's meeting list stays empty.
     expect(intel.facts.meetings).toEqual([]);
   });
+
+  it("reports study time and never lets it touch the goal", () => {
+    const studyIntervals: Interval[] = [
+      { start: new Date(at(wednesday, 13)).getTime(), end: new Date(at(wednesday, 15)).getTime() },
+    ];
+
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [], studyIntervals });
+
+    expect(intel.insights.map((i) => i.id)).toContain("study-planned");
+    // Two studied hours are busy but never owed…
+    expect(intel.facts.studyMs).toBe(2 * 3_600_000);
+    expect(intel.facts.studyTodayMs).toBe(2 * 3_600_000);
+    expect(intel.facts.busyMs).toBe(2 * 3_600_000);
+    // …so the goal is untouched and only the free time shrinks.
+    expect(intel.facts.goalMs).toBe(8 * 3_600_000);
+    expect(intel.facts.freeMs).toBe(3 * 3_600_000);
+  });
+
+  it("counts only the study still ahead in studyMs, but the whole day in studyTodayMs", () => {
+    const studyIntervals: Interval[] = [
+      // Already finished before noon.
+      { start: new Date(at(wednesday, 9)).getTime(), end: new Date(at(wednesday, 10)).getTime() },
+      // Still to come.
+      { start: new Date(at(wednesday, 15)).getTime(), end: new Date(at(wednesday, 16)).getTime() },
+    ];
+
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [], studyIntervals });
+
+    expect(intel.facts.studyMs).toBe(1 * 3_600_000);
+    expect(intel.facts.studyTodayMs).toBe(2 * 3_600_000);
+  });
+
+  it("names the day's study blocks for the coach", () => {
+    const studyBlocks = [
+      { title: "German grammar", start: at(wednesday, 13), end: at(wednesday, 15) },
+    ];
+
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [], studyBlocks });
+
+    expect(intel.facts.studySessions).toEqual([
+      { title: "German grammar", start: at(wednesday, 13), end: at(wednesday, 15) },
+    ]);
+    // Study blocks are not meetings.
+    expect(intel.facts.meetings).toEqual([]);
+  });
+
+  it("warns when study has eaten the day's only focus gap", () => {
+    // The whole noon–17:00 window would be one 5h gap, until 2h of study splits it.
+    const studyIntervals: Interval[] = [
+      { start: new Date(at(wednesday, 12, 30)).getTime(), end: new Date(at(wednesday, 14, 30)).getTime() },
+    ];
+
+    const intel = computeDayInsights({ ...base, events: [], trackedIntervals: [], studyIntervals });
+
+    expect(intel.insights.map((i) => i.id)).toContain("study-eats-gap");
+  });
 });
 
 describe("summarizeDay", () => {
@@ -731,6 +789,9 @@ describe("buildCoachContext", () => {
     avgPerActiveDay: 7,
     totalHours: 120,
     backlogHours: 2.5,
+    studyWeekHours: 0,
+    studyTotalHours: 0,
+    studyBestDayHours: 0,
   };
   const month: ApiMonthStats = {
     key: "2026-10",
@@ -763,13 +824,25 @@ describe("buildCoachContext", () => {
   it("derives the week target from the required weekdays", () => {
     const ctx = buildCoachContext({ intel, settings, now: noon, stats, month });
 
-    expect(ctx.week).toEqual({
+    const { days, ...week } = ctx.week!;
+    expect(week).toEqual({
       startDayKey: "2026-10-12",
       requiredDays: [1, 2, 3, 4, 5],
       targetHours: 40,
       doneHours: 16,
       remainingHours: 24,
     });
+    // Every day of the week is described so the coach never has to guess a slot.
+    expect(days).toHaveLength(7);
+    expect(days.map((d) => d.dayKey)).toEqual([
+      "2026-10-12",
+      "2026-10-13",
+      "2026-10-14",
+      "2026-10-15",
+      "2026-10-16",
+      "2026-10-17",
+      "2026-10-18",
+    ]);
   });
 
   it("scales the week target to a shorter required week", () => {
@@ -782,6 +855,50 @@ describe("buildCoachContext", () => {
 
     expect(ctx.week?.targetHours).toBe(24);
     expect(ctx.week?.remainingHours).toBe(0);
+  });
+
+  it("describes every day of the week so the coach never invents a slot", () => {
+    // Wed 14 Oct 2026, noon. Mon–Fri are work days, the weekend is off.
+    const days = buildCoachContext({ intel, settings, now: noon, stats, month }).week!.days;
+
+    // Today: free time is what is left from noon to the 17:00 window end.
+    const today = days.find((d) => d.isToday)!;
+    expect(today.dayKey).toBe("2026-10-14");
+    expect(today.weekday).toBe("Wednesday");
+    expect(today.windowStart).toBe("09:00");
+    expect(today.windowEnd).toBe("17:00");
+    expect(today.freeHours).toBe(5);
+
+    // Past days are already spent, so they offer nothing.
+    expect(days.find((d) => d.dayKey === "2026-10-12")!.freeHours).toBe(0);
+
+    // A future work day keeps its whole window.
+    expect(days.find((d) => d.dayKey === "2026-10-15")!.freeHours).toBe(8);
+
+    // The weekend is not a work day, so it has no window at all.
+    const saturdayRow = days.find((d) => d.dayKey === "2026-10-17")!;
+    expect(saturdayRow.isWorkDay).toBe(false);
+    expect(saturdayRow.windowStart).toBeNull();
+    expect(saturdayRow.windowEnd).toBeNull();
+  });
+
+  it("counts a blocking side task as busy on the day it is placed", () => {
+    const placed = makeTask({ id: 4, start: at(wednesday, 10), end: at(wednesday, 12), blocksWork: true });
+    const days = buildCoachContext({ intel, settings, now: noon, stats, month, tasks: [placed] }).week!.days;
+
+    const today = days.find((d) => d.isToday)!;
+    expect(today.busyHours).toBe(2);
+    // 12:00→17:00 is 5h free, all of it after the 2h task.
+    expect(today.freeHours).toBe(5);
+  });
+
+  it("subtracts a busy calendar event from the free time it offers", () => {
+    const meeting = makeEvent({ title: "Sync", start: at(wednesday, 13), end: at(wednesday, 15) });
+    const days = buildCoachContext({ intel, settings, now: noon, stats, month, events: [meeting] }).week!.days;
+
+    const today = days.find((d) => d.isToday)!;
+    expect(today.busyHours).toBe(2);
+    expect(today.freeHours).toBe(3);
   });
 
   it("passes the month figures through and nulls them out when absent", () => {
@@ -872,6 +989,39 @@ describe("buildCoachContext", () => {
   });
 });
 
+describe("isStaleSuggestion", () => {
+  const now = new Date(2026, 9, 14, 12, 0, 0).getTime();
+
+  it("flags a slot that has already passed", () => {
+    expect(isStaleSuggestion(new Date(2026, 9, 14, 11, 0).toISOString(), now)).toBe(true);
+    expect(isStaleSuggestion(new Date(2026, 9, 13, 16, 0).toISOString(), now)).toBe(true);
+  });
+
+  it("leaves a future slot alone", () => {
+    expect(isStaleSuggestion(new Date(2026, 9, 14, 13, 0).toISOString(), now)).toBe(false);
+    expect(isStaleSuggestion(new Date(2026, 9, 20, 9, 0).toISOString(), now)).toBe(false);
+  });
+});
+
+describe("staleSuggestionNote", () => {
+  const now = new Date(2026, 9, 14, 12, 0, 0).getTime();
+
+  it("returns null for a live slot, so the UI keeps its normal styling", () => {
+    expect(staleSuggestionNote(new Date(2026, 9, 14, 14, 0).toISOString(), now)).toBeNull();
+  });
+
+  it("names the clock when the slot was earlier today", () => {
+    const note = staleSuggestionNote(new Date(2026, 9, 14, 11, 0).toISOString(), now);
+    expect(note).toContain("already passed today");
+  });
+
+  it("names the weekday when the slot was on an earlier day", () => {
+    const note = staleSuggestionNote(new Date(2026, 9, 12, 9, 0).toISOString(), now);
+    expect(note).toContain("Monday");
+    expect(note).toContain("already passed");
+  });
+});
+
 describe("study sessions", () => {
   const noon = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 12, 0).getTime();
   /** A study block from 13:00 to 15:00, as the calendar route feeds it — busy time. */
@@ -919,5 +1069,38 @@ describe("study sessions", () => {
 
     expect(summary.doneMs).toBe(0);
     expect(summary.remainingMs).toBe(8 * 3_600_000);
+  });
+
+  it("gives the coach a study block that never counts as work", () => {
+    const study = session({ id: 9, start: at(wednesday, 13), end: at(wednesday, 15), type: "study", note: "German grammar" });
+    const intel = computeDayInsights({
+      day: wednesday,
+      now: noon,
+      events: [],
+      focusBlocks: [],
+      trackedIntervals: [],
+      settings,
+      studyIntervals: [{ start: new Date(at(wednesday, 13)).getTime(), end: new Date(at(wednesday, 15)).getTime() }],
+      studyBlocks: [{ title: "German grammar", start: at(wednesday, 13), end: at(wednesday, 15) }],
+    });
+
+    const ctx = buildCoachContext({ intel, settings, now: noon, studySessions: [study] });
+
+    expect(ctx.study.todayHours).toBe(2);
+    expect(ctx.study.remainingTodayHours).toBe(2);
+    expect(ctx.study.weekHours).toBe(2);
+    expect(ctx.study.sessions).toEqual([
+      { title: "German grammar", start: at(wednesday, 13), end: at(wednesday, 15) },
+    ]);
+  });
+
+  it("keeps work sessions out of the study block", () => {
+    const work = session({ id: 1, start: at(wednesday, 9), end: at(wednesday, 11), type: "work" });
+    const intel = computeDayInsights({ day: wednesday, now: noon, events: [], focusBlocks: [], trackedIntervals: [], settings });
+
+    const ctx = buildCoachContext({ intel, settings, now: noon, studySessions: [work] });
+
+    expect(ctx.study.weekHours).toBe(0);
+    expect(ctx.study.sessions).toEqual([]);
   });
 });

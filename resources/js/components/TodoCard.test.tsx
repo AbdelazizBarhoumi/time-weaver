@@ -60,6 +60,9 @@ const context: CoachContext = {
     goalMs: 28_800_000,
     remainingMs: 28_800_000,
     meetings: [],
+    studyMs: 0,
+    studyTodayMs: 0,
+    studySessions: [],
     backlogHours: null,
     perDayNeededHours: null,
     eventTitles: [],
@@ -76,6 +79,12 @@ const context: CoachContext = {
     done: 0,
     unplacedEstimateHours: 0,
     blockingHoursToday: 0,
+  },
+  study: {
+    todayHours: 0,
+    remainingTodayHours: 0,
+    weekHours: 0,
+    sessions: [],
   },
 };
 
@@ -254,5 +263,81 @@ describe("TodoCard", () => {
     renderCard({ tasks: [task()] });
 
     await waitFor(() => expect(screen.getByRole("button", { name: /ai plan my tasks/i })).toBeDisabled());
+  });
+
+  it("takes a placed task off the calendar but keeps it in the list", async () => {
+    put.mockResolvedValue({ data: task() });
+    renderCard({ tasks: [task({ id: 1, start: at(15), end: at(16) })] });
+
+    fireEvent.click(screen.getByTitle("Take off the calendar but keep the task"));
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith("/side-tasks/1", { start: null }));
+    // The task is still listed, only its slot is gone.
+    expect(screen.getByText("Clean the room")).toBeInTheDocument();
+  });
+
+  it("offers unplace only for a task that is on the calendar", () => {
+    renderCard({ tasks: [task({ id: 1 })] });
+
+    expect(screen.queryByTitle("Take off the calendar but keep the task")).not.toBeInTheDocument();
+  });
+
+  it("edits a task's title and estimate inline", async () => {
+    put.mockResolvedValue({ data: task() });
+    renderCard({ tasks: [task({ id: 1, title: "Clean the room", estimateMinutes: 30 })] });
+
+    fireEvent.click(screen.getByTitle("Edit title and estimate"));
+    fireEvent.change(screen.getByLabelText("Edit task title"), { target: { value: "Vacuum the room" } });
+    fireEvent.change(screen.getByLabelText("Edit estimated minutes"), { target: { value: "45" } });
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith("/side-tasks/1", { title: "Vacuum the room", estimate_minutes: 45 }),
+    );
+  });
+
+  it("cancels an inline edit without saving", () => {
+    renderCard({ tasks: [task({ id: 1, title: "Clean the room" })] });
+
+    fireEvent.click(screen.getByTitle("Edit title and estimate"));
+    fireEvent.change(screen.getByLabelText("Edit task title"), { target: { value: "Something else" } });
+    fireEvent.click(screen.getByRole("button", { name: "cancel" }));
+
+    expect(put).not.toHaveBeenCalled();
+    expect(screen.getByText("Clean the room")).toBeInTheDocument();
+  });
+
+  it("flags a suggestion whose slot has already passed", async () => {
+    post.mockResolvedValue({
+      data: {
+        available: true,
+        reply: "That gap works.",
+        suggestions: [{ taskId: 1, start: "2026-10-14T09:00", reason: "Quiet morning" }],
+      },
+    });
+
+    renderCard({ tasks: [task()] });
+    fireEvent.click(screen.getByRole("button", { name: /ai plan my tasks/i }));
+
+    // now is Wednesday noon, so the 09:00 slot is behind the clock.
+    expect(await screen.findByText(/already passed today/i)).toBeInTheDocument();
+    // It is flagged, not dropped: the user can still place it.
+    expect(screen.getByRole("button", { name: "place" })).toBeEnabled();
+  });
+
+  it("leaves a future suggestion unflagged", async () => {
+    post.mockResolvedValue({
+      data: {
+        available: true,
+        reply: "Tuesday evening is free.",
+        suggestions: [{ taskId: 1, start: "2026-10-20T17:00", reason: "Still leaves 3h" }],
+      },
+    });
+
+    renderCard({ tasks: [task()] });
+    fireEvent.click(screen.getByRole("button", { name: /ai plan my tasks/i }));
+
+    expect(await screen.findByText("Still leaves 3h")).toBeInTheDocument();
+    expect(screen.queryByText(/already passed/i)).not.toBeInTheDocument();
   });
 });

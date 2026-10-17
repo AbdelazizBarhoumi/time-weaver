@@ -160,6 +160,18 @@ class WorkSessionController extends Controller
             $byDay[$key] = ($byDay[$key] ?? 0) + $this->sessionDurationMs($session, $now);
         }
 
+        // Study hours are reported separately and never counted as work. They
+        // follow the same day-off rules: EXCLUDED days are skipped, INCLUDED days
+        // still count.
+        $studyByDay = [];
+        foreach ($request->user()->workSessions()->where('type', 'study')->get() as $session) {
+            $key = $session->start->format('Y-m-d');
+            if (isset($excludedSet[$key])) {
+                continue;
+            }
+            $studyByDay[$key] = ($studyByDay[$key] ?? 0) + $this->sessionDurationMs($session, $now);
+        }
+
         $streak = 0;
         $cursor = Carbon::today();
         // Skip ALL day-offs when checking streak (neither break nor count)
@@ -218,6 +230,22 @@ class WorkSessionController extends Controller
             }
         }
 
+        // Study roll-up: this week, all time, and the best single day.
+        $studyWeekMs = 0;
+        for ($i = 0; $i < 7; $i++) {
+            $d = $weekStart->copy()->addDays($i);
+            if ($d->gt($now)) {
+                break;
+            }
+            $dKey = $d->format('Y-m-d');
+            if (isset($excludedSet[$dKey])) {
+                continue;
+            }
+            $studyWeekMs += $studyByDay[$dKey] ?? 0;
+        }
+        $studyTotal = array_sum($studyByDay);
+        $studyBest = $studyByDay === [] ? 0 : max($studyByDay);
+
         // Cumulative shortfall against the 8-hour daily goal across every elapsed
         // *required* working day (the user's compulsory weekdays, excluding EXCLUDED
         // day-offs) from the first session through today. Days the user merely *can*
@@ -256,6 +284,9 @@ class WorkSessionController extends Controller
             'avgPerActiveDay' => $activeDays ? round($total / 3600000 / $activeDays, 1) : 0,
             'totalHours' => round($total / 3600000, 1),
             'backlogHours' => round($backlogMs / 3600000, 1),
+            'studyWeekHours' => round($studyWeekMs / 3600000, 1),
+            'studyTotalHours' => round($studyTotal / 3600000, 1),
+            'studyBestDayHours' => round($studyBest / 3600000, 1),
         ]);
     }
 

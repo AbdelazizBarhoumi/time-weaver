@@ -59,6 +59,7 @@ function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
       onPlaceTask={noop}
       onCompleteTask={noop}
       onDeleteTask={noop}
+      onUnplaceTask={noop}
       onMoveTask={noop}
       onCancelPlacing={noop}
       {...props}

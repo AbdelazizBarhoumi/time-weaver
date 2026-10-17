@@ -12,6 +12,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import {
   dayKey,
   hoursForDay,
+  isStudySession,
   workSessionsOnly,
   DAILY_GOAL_HOURS,
   startSegments,
@@ -207,6 +208,7 @@ function Index() {
     { label: "BEST DAY", value: stats?.bestDayHours.toFixed(1) ?? "0.0", unit: "h", neon: false },
     { label: "AVG / DAY", value: stats?.avgPerActiveDay.toFixed(1) ?? "0.0", unit: "h", neon: false },
     { label: "BACKLOG", value: backlog.toFixed(1), unit: "h", color: backlogColor },
+    { label: "STUDY · WK", value: stats?.studyWeekHours.toFixed(1) ?? "0.0", unit: "h", color: "#fcd34d" },
   ];
 
   if (isLoading) {
@@ -273,6 +275,7 @@ function Index() {
           <TodayPlanCard />
           <Heatmap
             sessions={workSessionsOnly(workSessions)}
+            studySessions={workSessions.filter(isStudySession)}
             now={now}
             customDayOffs={customDayOffs}
             onToggleDayOff={handleToggleDayOff}
@@ -283,7 +286,7 @@ function Index() {
           />
           <MonthlyCard sessions={workSessionsOnly(workSessions)} now={now} customDayOffs={customDayOffs} />
 
-          <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-5">
+          <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-6">
             {statCards.map((c, i) => (
               <div
                 key={c.label}

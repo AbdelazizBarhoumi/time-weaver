@@ -12,6 +12,7 @@ import {
 import {
   formatHM,
   formatTime,
+  isStudySession,
   sessionDurationMs,
   workSessionsOnly,
   type WorkSession,
@@ -110,6 +111,10 @@ function DayDetailPage() {
   const totalHours = totalMs / 3_600_000;
   const goalHours = 8;
   const progress = Math.min(1, totalHours / goalHours);
+  // Study is reported separately: it blocks the day but never advances the goal.
+  const studyMs = sessions
+    .filter(isStudySession)
+    .reduce((total: number, session: WorkSession) => total + sessionDurationMs(session), 0);
 
   const createSession = useCreateSession();
   const updateSession = useUpdateSession();
@@ -227,6 +232,12 @@ function DayDetailPage() {
             <div className="font-mono text-sm tabular-nums text-neon">
               {totalHours.toFixed(1)}h / {goalHours}h
             </div>
+
+            {studyMs > 0 && (
+              <div className="font-mono text-sm tabular-nums text-amber-300" title="Study blocks your work window but never counts toward the goal">
+                {formatHM(studyMs)} study
+              </div>
+            )}
           </div>
         </header>
 

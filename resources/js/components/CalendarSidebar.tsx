@@ -17,7 +17,7 @@ import {
 import { formatHM, formatHMS, formatTime } from "@/lib/tracker";
 
 /** Live countdown: how long you can still work today, from now until work end. */
-export function WorkableTimeCard({ workable }: { workable: WorkableTimeLeft }) {
+export function WorkableTimeCard({ workable, studyMs = 0 }: { workable: WorkableTimeLeft; studyMs?: number }) {
   const dayOver = workable.remainingMs === 0 && workable.windowMs === 0;
   return (
     <div className="rounded-lg border border-line bg-panel p-4">
@@ -32,6 +32,12 @@ export function WorkableTimeCard({ workable }: { workable: WorkableTimeLeft }) {
         <dd className="text-right text-ink">{formatHM(workable.windowMs)}</dd>
         <dt className="text-mut">Taken by events</dt>
         <dd className="text-right text-l3">{formatHM(workable.busyMs)}</dd>
+        {studyMs > 0 && (
+          <>
+            <dt className="text-mut">of which study</dt>
+            <dd className="text-right text-amber-300/90">{formatHM(studyMs)}</dd>
+          </>
+        )}
       </dl>
       <p className="mt-3 text-xs text-mut">
         {!workable.isWorkDay
@@ -43,6 +49,48 @@ export function WorkableTimeCard({ workable }: { workable: WorkableTimeLeft }) {
               : workable.remainingMs === 0
                 ? "Meetings fill the rest of your day."
                 : "Meetings are already subtracted; the rest is yours to work."}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Study blocks block the work window but never count toward work goals. This
+ * card reports them apart from work so the two never blur together.
+ */
+export function StudyCard({
+  todayMs,
+  weekMs,
+  blocks,
+}: {
+  todayMs: number;
+  weekMs: number;
+  blocks: { title: string; start: string; end: string }[];
+}) {
+  return (
+    <div className="rounded-lg border border-amber-300/30 bg-panel p-4">
+      <div className="font-mono text-[11px] uppercase tracking-widest text-amber-300">Study today</div>
+      <div className="mt-2 font-mono text-3xl font-semibold text-amber-300">{formatHM(todayMs)}</div>
+      <dl className="mt-3 grid grid-cols-2 gap-y-1.5 font-mono text-xs">
+        <dt className="text-mut">This week</dt>
+        <dd className="text-right text-amber-300/90">{formatHM(weekMs)}</dd>
+      </dl>
+      {blocks.length > 0 ? (
+        <ul className="mt-3 space-y-1">
+          {blocks.map((b, i) => (
+            <li key={`${b.start}-${i}`} className="flex items-center justify-between gap-2 font-mono text-[11px]">
+              <span className="truncate text-ink/80">{b.title}</span>
+              <span className="shrink-0 text-amber-300/80">
+                {formatTime(b.start)}–{formatTime(b.end)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-xs text-mut">No study planned today. Start a study session to block the time.</p>
+      )}
+      <p className="mt-3 text-xs text-mut">
+        Study blocks shrink your work window but never count toward the 8h goal.
       </p>
     </div>
   );
@@ -228,6 +276,7 @@ export function Legend() {
   const items: { label: string; className: string }[] = [
     { label: "Work event", className: "bg-l2 ring-1 ring-neon" },
     { label: "Tracked session", className: "bg-neon/10 border-l-2 border-neon/70" },
+    { label: "Study session", className: "bg-amber-300/15 border-l-2 border-amber-300/70" },
     { label: "Planned block", className: "bg-l1 border border-neon" },
     { label: "Free gap for work", className: "border border-dashed border-neon/60" },
     { label: "Non-work / day off", className: "bg-line" },

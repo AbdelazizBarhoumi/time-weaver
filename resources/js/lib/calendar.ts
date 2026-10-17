@@ -839,6 +839,13 @@ export interface CoachMeeting {
   end: string;
 }
 
+/** A study block as the coach sees it: fixed time that never counts as work. */
+export interface CoachStudyBlock {
+  title: string;
+  start: string;
+  end: string;
+}
+
 export interface DayFacts {
   dayKey: string;
   isWorkDay: boolean;
@@ -847,6 +854,7 @@ export interface DayFacts {
   windowStart: string | null;
   windowEnd: string | null;
   windowMs: number;
+  /** Non-work event time inside the remaining window; already includes study. */
   busyMs: number;
   freeMs: number;
   longestGapMs: number;
@@ -854,6 +862,12 @@ export interface DayFacts {
   goalMs: number;
   remainingMs: number;
   meetings: CoachMeeting[];
+  /** Study time inside the remaining window (from now to work end); also counted in `busyMs`. */
+  studyMs: number;
+  /** Study time across the whole day, regardless of the clock. */
+  studyTodayMs: number;
+  /** The day's study blocks, named, so the coach can reference the subject. */
+  studySessions: CoachStudyBlock[];
   backlogHours: number | null;
   perDayNeededHours: number | null;
   eventTitles: string[];
@@ -944,6 +958,10 @@ export function computeDayInsights(args: {
   trackedIntervals?: Interval[];
   /** Placed side tasks that block work time; they occupy the day like events. */
   extraBusy?: Interval[];
+  /** Study sessions: they block work time like an event, but never count toward the goal. */
+  studyIntervals?: Interval[];
+  /** The named study blocks for the day, used to ground the coach. */
+  studyBlocks?: CoachStudyBlock[];
   goalHours?: number;
   backlogHours?: number | null;
   perDayNeededHours?: number | null;
@@ -959,10 +977,16 @@ export function computeDayInsights(args: {
   const busyAll = timed.filter((e) => !e.isWork);
   const workAll = timed.filter((e) => e.isWork);
 
-  const busyFromNow = [
-    ...busyAll.map((e) => clip(eventInterval(e), { start, end: windowEnd })),
-    ...(args.extraBusy ?? []).map((iv) => clip(iv, { start, end: windowEnd })),
-  ].filter((x): x is Interval => !!x);
+  const busyAllFromNow = busyAll
+    .map((e) => clip(eventInterval(e), { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+  const taskFromNow = (args.extraBusy ?? [])
+    .map((iv) => clip(iv, { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+  const studyFromNow = (args.studyIntervals ?? [])
+    .map((iv) => clip(iv, { start, end: windowEnd }))
+    .filter((x): x is Interval => !!x);
+  const busyFromNow = [...busyAllFromNow, ...taskFromNow, ...studyFromNow];
   const workFromNow = workAll
     .map((e) => clip(eventInterval(e), { start, end: windowEnd }))
     .filter((x): x is Interval => !!x);
@@ -974,6 +998,13 @@ export function computeDayInsights(args: {
     .filter((x): x is Interval => !!x);
 
   const busyMs = totalMs(busyFromNow);
+  const studyMs = totalMs(studyFromNow);
+  const studyTodayMs = totalMs(clipAll(args.studyIntervals ?? [], dayIv));
+  // The same free-gap math with study removed, so we can tell when study has
+  // swallowed the only real focus window of the day.
+  const freeGapsWithoutStudy = remainingWindowMs > 0
+    ? freeIntervals({ start, end: windowEnd }, [...busyAllFromNow, ...taskFromNow, ...workFromNow, ...focusFromNow, ...trackedFromNow])
+    : [];
   const freeGaps = remainingWindowMs > 0 ? freeIntervals({ start, end: windowEnd }, [...busyFromNow, ...workFromNow, ...focusFromNow, ...trackedFromNow]) : [];
   const freeMs = totalMs(freeGaps);
   const longestGapMs = freeGaps.reduce((max, iv) => Math.max(max, iv.end - iv.start), 0);
@@ -1007,6 +1038,9 @@ export function computeDayInsights(args: {
     goalMs: budget.goalMs,
     remainingMs: budget.remainingMs,
     meetings,
+    studyMs,
+    studyTodayMs,
+    studySessions: (args.studyBlocks ?? []).map((b) => ({ title: b.title, start: b.start, end: b.end })),
     backlogHours: args.backlogHours ?? null,
     perDayNeededHours: args.perDayNeededHours ?? null,
     eventTitles,
@@ -1035,6 +1069,34 @@ export function computeDayInsights(args: {
       title: "Optional day",
       detail: "Nothing is owed today. Anything you track counts as extra.",
     });
+  }
+
+  // R2b — study planned
+  if (studyTodayMs > 0) {
+    const aheadMs = studyFromNow.reduce((sum, iv) => sum + (iv.end - iv.start), 0);
+    insights.push({
+      id: "study-planned",
+      tone: "info",
+      title: "Study planned",
+      detail:
+        aheadMs > 0
+          ? `${formatHM(studyTodayMs)} of study today, ${formatHM(aheadMs)} of it still ahead. It blocks work time but never counts toward the goal.`
+          : `${formatHM(studyTodayMs)} of study today. It blocks work time but never counts toward the goal.`,
+    });
+  }
+
+  // R2c — study swallowed the only focus gap
+  if (studyMs >= 30 * 60_000) {
+    const longestWithoutStudy = freeGapsWithoutStudy.reduce((max, iv) => Math.max(max, iv.end - iv.start), 0);
+    if (longestWithoutStudy >= 90 * 60_000 && longestGapMs < longestWithoutStudy) {
+      insights.push({
+        id: "study-eats-gap",
+        tone: "warn",
+        title: "Study is using your focus time",
+        detail: `Without study you would still have a ${formatHM(longestWithoutStudy)} gap; study cuts the longest free stretch to ${formatHM(longestGapMs)}.`,
+        hint: "Move the study block if you need a deep-work window today.",
+      });
+    }
   }
 
   // R3/R4/R5 — capacity warnings
@@ -1190,6 +1252,27 @@ export function computeDayInsights(args: {
   return { insights, tone, longestGapMs, facts };
 }
 
+/**
+ * One day of the coach's week, with the numbers needed to place a task without
+ * guessing. Without it the snapshot only describes today, so any slot the model
+ * proposes on another day is invented.
+ */
+export interface CoachWeekDay {
+  dayKey: string;
+  /** Local weekday name, e.g. "Saturday". */
+  weekday: string;
+  isToday: boolean;
+  isWorkDay: boolean;
+  isRequired: boolean;
+  /** Local clock the work window opens, "HH:MM", or null when the day is off. */
+  windowStart: string | null;
+  windowEnd: string | null;
+  /** Non-work busy time inside the window: meetings, blocking tasks and study. */
+  busyHours: number;
+  /** Free time left: from now on today, the whole window on later days. */
+  freeHours: number;
+}
+
 /** Week-level grounding for the coach chat. */
 export interface CoachWeekContext {
   /** Monday of the current week, e.g. "2026-10-12". */
@@ -1202,6 +1285,8 @@ export interface CoachWeekContext {
   doneHours: number;
   /** targetHours − doneHours, floored at 0. */
   remainingHours: number;
+  /** Every day of this week, so the coach reads real gaps instead of inventing them. */
+  days: CoachWeekDay[];
 }
 
 /** Month-level grounding for the coach chat. */
@@ -1246,6 +1331,22 @@ export interface CoachTasksSummary {
 }
 
 /**
+ * Study time as the coach sees it. Study blocks are fixed commitments that
+ * consume free time but never advance the work goal, so there is deliberately
+ * no target here — just what was studied and what is still to come.
+ */
+export interface CoachStudyContext {
+  /** Study today across the whole day, in hours. */
+  todayHours: number;
+  /** Study still ahead today within the work window, in hours. */
+  remainingTodayHours: number;
+  /** Study this week (Monday start), including blocks still ahead, in hours. */
+  weekHours: number;
+  /** The week's study blocks, named and capped for prompt size. */
+  sessions: CoachStudyBlock[];
+}
+
+/**
  * The data snapshot the coach answers from. It is rebuilt on every turn so the
  * model always sees the current time, day and week/month pressure.
  */
@@ -1265,6 +1366,8 @@ export interface CoachContext {
   /** Side tasks worth telling the coach about, capped for prompt size. */
   tasks: CoachTask[];
   tasksSummary: CoachTasksSummary;
+  /** Study time — it blocks the day but is never counted as work. */
+  study: CoachStudyContext;
 }
 
 /** Cap on the side tasks sent with each turn, keeping the prompt bounded. */
@@ -1282,6 +1385,10 @@ export function buildCoachContext(args: {
   stats?: ApiStats | null;
   month?: ApiMonthStats | null;
   tasks?: SideTask[];
+  /** All tracked sessions; the study ones are pulled out for the coach. */
+  studySessions?: CalendarSession[];
+  /** Calendar events for the visible range, so other days are real, not guessed. */
+  events?: CalendarEvent[];
   goalHours?: number;
 }): CoachContext {
   const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
@@ -1299,6 +1406,50 @@ export function buildCoachContext(args: {
   const targetHours = requiredThisWeek * goalHours;
   const doneHours = args.stats?.weekHours ?? 0;
 
+  const allTasks = args.tasks ?? [];
+  const studyList = (args.studySessions ?? []).filter((session) => (session.type ?? "work") === "study");
+  const roundHours = (hours: number) => Math.round(hours * 10) / 10;
+
+  // One row per day of the week, with real busy/free numbers. Without this the
+  // model can only see today, so every slot it proposes on another day is a guess.
+  const clockOf = (ms: number): string => new Date(ms).toTimeString().slice(0, 5);
+  const weekDays: CoachWeekDay[] = [];
+  for (let i = 0; i < 7; i++) {
+    const day = addDays(weekStart, i);
+    const working = isWorkDay(day, args.settings);
+    const window = workWindow(day, args.settings);
+    const windowStartMs = window.start;
+    const windowEndMs = window.end;
+    const windowIv: Interval = { start: windowStartMs, end: windowEndMs };
+
+    const busyPieces: Interval[] = [
+      ...(args.events ?? []).filter((e) => !e.allDay && !e.isWork).map((e) => eventInterval(e)),
+      ...blockingTaskIntervals(allTasks, windowIv),
+      ...sessionBands(studyList, day, args.now).map((band) => ({ start: band.start, end: band.end })),
+    ];
+    const busyMs = totalMs(mergeIntervals(clipAll(busyPieces, windowIv)));
+
+    // Free time runs from now on today, and across the whole window later on. A
+    // day that is already over offers nothing.
+    const freeFromMs = Math.max(windowStartMs, args.now);
+    const busyAheadMs = totalMs(
+      mergeIntervals(clipAll(busyPieces, { start: freeFromMs, end: windowEndMs })),
+    );
+    const freeMs = windowEndMs <= args.now ? 0 : Math.max(0, windowEndMs - freeFromMs - busyAheadMs);
+
+    weekDays.push({
+      dayKey: `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`,
+      weekday: day.toLocaleDateString("en-US", { weekday: "long" }),
+      isToday: sameDay(day, today),
+      isWorkDay: working,
+      isRequired: isRequiredDay(day, args.settings),
+      windowStart: working ? clockOf(windowStartMs) : null,
+      windowEnd: working ? clockOf(windowEndMs) : null,
+      busyHours: roundHours(busyMs / 3_600_000),
+      freeHours: roundHours(freeMs / 3_600_000),
+    });
+  }
+
   const week: CoachWeekContext = {
     startDayKey: `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(
       weekStart.getDate(),
@@ -1307,6 +1458,7 @@ export function buildCoachContext(args: {
     targetHours,
     doneHours,
     remainingHours: Math.max(0, targetHours - doneHours),
+    days: weekDays,
   };
 
   const month: CoachMonthContext | null = args.month
@@ -1323,7 +1475,6 @@ export function buildCoachContext(args: {
 
   // Tell the coach about the tasks that still matter: everything outstanding,
   // plus the ones already finished today so it does not suggest them again.
-  const allTasks = args.tasks ?? [];
   const liveTasks = allTasks.filter((task) => !isSideTaskDone(task, args.now));
   const finishedToday = allTasks.filter(
     (task) => isSideTaskDone(task, args.now) && task.start !== null && sameDay(new Date(task.start), today),
@@ -1340,7 +1491,6 @@ export function buildCoachContext(args: {
 
   const unplaced = liveTasks.filter((task) => task.start === null);
   const window = workWindow(today, args.settings);
-  const roundHours = (hours: number) => Math.round(hours * 10) / 10;
   const tasksSummary: CoachTasksSummary = {
     total: allTasks.length,
     unplaced: unplaced.length,
@@ -1350,6 +1500,29 @@ export function buildCoachContext(args: {
     blockingHoursToday: roundHours(
       totalMs(blockingTaskIntervals(liveTasks, { start: Math.max(window.start, args.now), end: window.end })) / 3_600_000,
     ),
+  };
+
+  // Study is a fixed commitment: report it, but never let it count as work.
+  const weekIv: Interval = { start: weekStart.getTime(), end: addDays(weekStart, 7).getTime() };
+  const weekStudySessions = studyList.filter((session) => {
+    const startedAt = new Date(session.start).getTime();
+    return startedAt >= weekIv.start && startedAt < weekIv.end;
+  });
+  const weekStudyMs = totalMs(
+    weekStudySessions
+      .flatMap((session) => sessionWorkIntervals(session, args.now))
+      .map((iv) => clip(iv, weekIv))
+      .filter((x): x is Interval => !!x),
+  );
+  const study: CoachStudyContext = {
+    todayHours: roundHours(args.intel.facts.studyTodayMs / 3_600_000),
+    remainingTodayHours: roundHours(args.intel.facts.studyMs / 3_600_000),
+    weekHours: roundHours(weekStudyMs / 3_600_000),
+    sessions: weekStudySessions.slice(0, MAX_COACH_TASKS).map((session) => ({
+      title: session.note || "Study",
+      start: session.start,
+      end: session.end ?? new Date(args.now).toISOString(),
+    })),
   };
 
   return {
@@ -1366,7 +1539,31 @@ export function buildCoachContext(args: {
     streak: args.stats?.streak ?? null,
     tasks,
     tasksSummary,
+    study,
   };
+}
+
+/**
+ * A coach suggestion whose slot is already behind the clock. The model can still
+ * propose one (a past date looks just like any other in the snapshot), so the UI
+ * keeps it but marks it rather than silently placing a task in the past.
+ */
+export function isStaleSuggestion(start: string, now: number): boolean {
+  return new Date(start).getTime() <= now;
+}
+
+/** Plain-language warning shown on a suggestion whose slot has already passed. */
+export function staleSuggestionNote(start: string, now: number): string | null {
+  if (!isStaleSuggestion(start, now)) return null;
+  const slot = new Date(start);
+  const clock = formatTime(slot.toISOString());
+  if (sameDay(slot, new Date(now))) return `That time (${clock}) has already passed today.`;
+
+  const tomorrow = startOfDay(new Date(now));
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const day = sameDay(slot, tomorrow) ? "tomorrow" : slot.toLocaleDateString("en-US", { weekday: "long" });
+
+  return `That slot (${day}, ${clock}) has already passed.`;
 }
 
 /** Best-effort IANA zone for the running browser, falling back to UTC. */

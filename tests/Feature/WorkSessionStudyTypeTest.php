@@ -137,6 +137,61 @@ class WorkSessionStudyTypeTest extends TestCase
             ->assertJsonPath('backlogHours', 8);
     }
 
+    public function test_stats_report_study_hours_separately(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-07 17:00:00')); // Wednesday
+
+        WorkSession::factory()->study()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-05 09:00:00'),
+            'end' => Carbon::parse('2026-10-05 17:00:00'), // 8h study Monday
+        ]);
+        WorkSession::factory()->study()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-06 09:00:00'),
+            'end' => Carbon::parse('2026-10-06 11:00:00'), // 2h study Tuesday
+        ]);
+        WorkSession::factory()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-06 12:00:00'),
+            'end' => Carbon::parse('2026-10-06 16:00:00'), // 4h work Tuesday
+        ]);
+
+        $this->getJson('/api/sessions/stats')
+            ->assertStatus(200)
+            ->assertJsonPath('studyWeekHours', 10)
+            ->assertJsonPath('studyTotalHours', 10)
+            ->assertJsonPath('studyBestDayHours', 8)
+            // The work stats stay untouched by study.
+            ->assertJsonPath('weekHours', 4)
+            ->assertJsonPath('totalHours', 4)
+            ->assertJsonPath('bestDayHours', 4);
+    }
+
+    public function test_study_hours_skip_excluded_day_offs(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-07 17:00:00')); // Wednesday
+
+        $this->postJson('/api/day-offs', ['date' => '2026-10-05', 'type' => 'excluded'])->assertStatus(201);
+
+        WorkSession::factory()->study()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-05 09:00:00'),
+            'end' => Carbon::parse('2026-10-05 17:00:00'), // 8h study on an excluded day
+        ]);
+        WorkSession::factory()->study()->create([
+            'user_id' => $this->user->id,
+            'start' => Carbon::parse('2026-10-06 09:00:00'),
+            'end' => Carbon::parse('2026-10-06 11:00:00'), // 2h study Tuesday
+        ]);
+
+        $this->getJson('/api/sessions/stats')
+            ->assertStatus(200)
+            ->assertJsonPath('studyWeekHours', 2)
+            ->assertJsonPath('studyTotalHours', 2)
+            ->assertJsonPath('studyBestDayHours', 2);
+    }
+
     public function test_monthly_breakdown_ignores_study_sessions(): void
     {
         $this->travelTo(Carbon::parse('2026-10-07 17:00:00')); // Wednesday
