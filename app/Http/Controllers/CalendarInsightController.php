@@ -7,10 +7,17 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Throwable;
 
 class CalendarInsightController extends Controller
 {
+    /** Cap on a single chat turn, keeping the replayed transcript bounded. */
+    private const MAX_MESSAGE_CHARS = 4000;
+
+    /** Cap on how many turns are replayed to Gemini. */
+    private const MAX_MESSAGES = 24;
+
     public function __construct(private GeminiCoachService $gemini) {}
 
     /**
@@ -83,6 +90,58 @@ class CalendarInsightController extends Controller
         return response()->json([
             'available' => true,
             'text' => $text,
+            'generatedAt' => now()->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * Continue a multi-turn coaching conversation.
+     *
+     * This is deliberately stateless: the client replays the whole transcript
+     * and the current data snapshot on every turn, and we forward both to
+     * Gemini with `store: false`. Nothing is persisted, and because each turn
+     * is unique there is no caching here (unlike the one-shot read-out).
+     */
+    public function chat(Request $request): JsonResponse
+    {
+        if (! $this->gemini->isConfigured()) {
+            return response()->json([
+                'available' => false,
+                'message' => 'Add a GEMINI_API_KEY to enable AI coaching.',
+            ], 503);
+        }
+
+        $validated = $request->validate([
+            'messages' => ['required', 'array', 'min:1', 'max:'.self::MAX_MESSAGES],
+            'messages.*.role' => ['required', Rule::in(['user', 'assistant'])],
+            'messages.*.content' => ['required', 'string', 'max:'.self::MAX_MESSAGE_CHARS],
+            'context' => ['required', 'array'],
+        ]);
+
+        /** @var array<int, array{role: string, content: string}> $messages */
+        $messages = array_slice(array_values($validated['messages']), -self::MAX_MESSAGES);
+
+        if (($messages[array_key_last($messages)]['role'] ?? null) !== 'user') {
+            return response()->json([
+                'available' => true,
+                'message' => 'The conversation must end with a message from you.',
+            ], 422);
+        }
+
+        try {
+            $reply = $this->gemini->chat($messages, $validated['context']);
+        } catch (Throwable $e) {
+            Log::warning('Gemini coach chat failed', ['message' => $e->getMessage()]);
+
+            return response()->json([
+                'available' => true,
+                'message' => 'The AI coach could not be reached right now.',
+            ], 502);
+        }
+
+        return response()->json([
+            'available' => true,
+            'reply' => $reply,
             'generatedAt' => now()->toIso8601String(),
         ]);
     }

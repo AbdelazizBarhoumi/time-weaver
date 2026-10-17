@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildCoachContext,
   computeDayBudget,
   computeDayInsights,
   computeWorkableTimeLeft,
@@ -24,6 +25,7 @@ import {
   type Interval,
 } from "@/lib/calendar";
 import type { Segment } from "@/lib/tracker";
+import type { ApiMonthStats, ApiStats } from "@/lib/api";
 
 const settings: CalendarSettings = {
   workStart: "09:00",
@@ -589,5 +591,86 @@ describe("relativeTime", () => {
     expect(relativeTime(new Date(now - 12 * 60_000).toISOString(), now)).toBe("12m ago");
     expect(relativeTime(new Date(now - 3 * 3_600_000).toISOString(), now)).toBe("3h ago");
     expect(relativeTime(new Date(now - 2 * 86_400_000).toISOString(), now)).toBe("2d ago");
+  });
+});
+
+describe("buildCoachContext", () => {
+  const noon = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate(), 12, 0).getTime();
+  const intel = computeDayInsights({ day: wednesday, now: noon, focusBlocks: [], settings, events: [], trackedIntervals: [] });
+  const stats: ApiStats = {
+    streak: 4,
+    weekHours: 16,
+    bestDayHours: 9,
+    avgPerActiveDay: 7,
+    totalHours: 120,
+    backlogHours: 2.5,
+  };
+  const month: ApiMonthStats = {
+    key: "2026-10",
+    label: "October 2026",
+    doneHours: 60,
+    targetHours: 176,
+    remainingHours: 116,
+    daysLeft: 12,
+    perDayNeeded: 9.7,
+    paceDeltaHours: -4,
+    progress: 0.34,
+    isCurrent: true,
+  };
+
+  it("carries today's facts and the local now", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon, stats, month });
+
+    expect(ctx.now).toBe(new Date(noon).toISOString());
+    expect(ctx.today).toEqual(intel.facts);
+    expect(ctx.dailyGoalHours).toBe(8);
+  });
+
+  it("names the browser timezone so the coach can convert UTC instants", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon, stats, month });
+
+    expect(ctx.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    expect(ctx.utcOffsetMinutes).toBe(-new Date(noon).getTimezoneOffset());
+  });
+
+  it("derives the week target from the required weekdays", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon, stats, month });
+
+    expect(ctx.week).toEqual({
+      startDayKey: "2026-10-12",
+      requiredDays: [1, 2, 3, 4, 5],
+      targetHours: 40,
+      doneHours: 16,
+      remainingHours: 24,
+    });
+  });
+
+  it("scales the week target to a shorter required week", () => {
+    const ctx = buildCoachContext({
+      intel,
+      settings: { ...settings, requiredDays: [1, 2, 3] },
+      now: noon,
+      stats: { ...stats, weekHours: 30 },
+    });
+
+    expect(ctx.week?.targetHours).toBe(24);
+    expect(ctx.week?.remainingHours).toBe(0);
+  });
+
+  it("passes the month figures through and nulls them out when absent", () => {
+    const withMonth = buildCoachContext({ intel, settings, now: noon, stats, month });
+    expect(withMonth.month?.perDayNeeded).toBe(9.7);
+    expect(withMonth.month?.daysLeft).toBe(12);
+
+    const withoutMonth = buildCoachContext({ intel, settings, now: noon, stats });
+    expect(withoutMonth.month).toBeNull();
+  });
+
+  it("nulls the stats-derived fields when stats are missing", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon });
+
+    expect(ctx.backlogHours).toBeNull();
+    expect(ctx.streak).toBeNull();
+    expect(ctx.week?.doneHours).toBe(0);
   });
 });

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./api";
+import { api, type ApiMonthStats, type ApiStats } from "./api";
 import { DAILY_GOAL_HOURS, formatHM, type Segment } from "./tracker";
 
 export interface CalendarAccount {
@@ -143,6 +143,20 @@ export interface CoachResponse {
   message?: string;
 }
 
+/** One turn in the coach chat. `assistant` is the coach's own reply. */
+export interface CoachChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** Response from the AI coach chat endpoint. */
+export interface CoachChatResponse {
+  available: boolean;
+  reply?: string;
+  generatedAt?: string;
+  message?: string;
+}
+
 export const calendarApi = {
   accounts: () => api.get<CalendarAccount[]>("/calendar/accounts").then((r) => r.data),
   connectUrl: () => api.post<{ url: string }>("/calendar/accounts/connect").then((r) => r.data.url),
@@ -195,6 +209,8 @@ export const calendarApi = {
   deleteFocusBlock: (id: number) => api.delete(`/calendar/focus-blocks/${id}`),
   coachStatus: () => api.get<{ available: boolean }>("/calendar/coach/status").then((r) => r.data),
   coach: (facts: DayFacts) => api.post<CoachResponse>("/calendar/coach", { facts }).then((r) => r.data),
+  coachChat: (messages: CoachChatMessage[], context: CoachContext) =>
+    api.post<CoachChatResponse>("/calendar/coach/chat", { messages, context }).then((r) => r.data),
 };
 
 /* ---------------------------------------------------------------- Hooks */
@@ -235,6 +251,14 @@ export function useCoachStatus() {
 /** On-demand AI coaching: only runs when the user clicks the button. */
 export function useDayCoach() {
   return useMutation({ mutationFn: (facts: DayFacts) => calendarApi.coach(facts) });
+}
+
+/** Multi-turn AI coaching. Each call replays the transcript; nothing is stored. */
+export function useCoachChat() {
+  return useMutation({
+    mutationFn: (args: { messages: CoachChatMessage[]; context: CoachContext }) =>
+      calendarApi.coachChat(args.messages, args.context),
+  });
 }
 
 function useCalendarMutation<TArg, TResult>(fn: (arg: TArg) => Promise<TResult>) {
@@ -1000,6 +1024,126 @@ export function computeDayInsights(args: {
   const tone: InsightTone = insights[0]?.tone ?? "good";
 
   return { insights, tone, longestGapMs, facts };
+}
+
+/** Week-level grounding for the coach chat. */
+export interface CoachWeekContext {
+  /** Monday of the current week, e.g. "2026-10-12". */
+  startDayKey: string;
+  /** Compulsory weekdays still ahead this week, plus the ones already worked. */
+  requiredDays: number[];
+  /** DAILY_GOAL_HOURS × required days in this week. */
+  targetHours: number;
+  /** Hours tracked so far this week (Sunday-excluded, matches /sessions/stats). */
+  doneHours: number;
+  /** targetHours − doneHours, floored at 0. */
+  remainingHours: number;
+}
+
+/** Month-level grounding for the coach chat. */
+export interface CoachMonthContext {
+  label: string;
+  doneHours: number;
+  targetHours: number;
+  remainingHours: number;
+  /** Required days left in the month, today included. */
+  daysLeft: number;
+  perDayNeeded: number;
+  /** done − (goal × required days elapsed); negative = behind. */
+  paceDeltaHours: number;
+}
+
+/**
+ * The data snapshot the coach answers from. It is rebuilt on every turn so the
+ * model always sees the current time, day and week/month pressure.
+ */
+export interface CoachContext {
+  /** ISO timestamp (UTC) of when the snapshot was taken. */
+  now: string;
+  /** IANA name of the user's browser timezone, e.g. "Europe/Berlin". */
+  timeZone: string;
+  /** Minutes to add to UTC to reach the user's local clock (120 for UTC+2). */
+  utcOffsetMinutes: number;
+  dailyGoalHours: number;
+  today: DayFacts;
+  week: CoachWeekContext | null;
+  month: CoachMonthContext | null;
+  backlogHours: number | null;
+  streak: number | null;
+}
+
+/**
+ * Assemble the grounding snapshot for the coach chat from the same numbers the
+ * calendar already renders. Week and month figures are optional so the chat
+ * still works before those queries resolve.
+ */
+export function buildCoachContext(args: {
+  intel: DayIntelligence;
+  settings: CalendarSettings;
+  now: number;
+  stats?: ApiStats | null;
+  month?: ApiMonthStats | null;
+  goalHours?: number;
+}): CoachContext {
+  const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
+  const today = new Date(args.now);
+  const weekStart = startOfWeek(today);
+
+  const requiredDays = args.settings.requiredDays ?? [];
+  let requiredThisWeek = 0;
+  for (let i = 0; i < 7; i++) {
+    if (requiredDays.includes(addDays(weekStart, i).getDay())) {
+      requiredThisWeek++;
+    }
+  }
+
+  const targetHours = requiredThisWeek * goalHours;
+  const doneHours = args.stats?.weekHours ?? 0;
+
+  const week: CoachWeekContext = {
+    startDayKey: `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(
+      weekStart.getDate(),
+    ).padStart(2, "0")}`,
+    requiredDays,
+    targetHours,
+    doneHours,
+    remainingHours: Math.max(0, targetHours - doneHours),
+  };
+
+  const month: CoachMonthContext | null = args.month
+    ? {
+        label: args.month.label,
+        doneHours: args.month.doneHours,
+        targetHours: args.month.targetHours,
+        remainingHours: args.month.remainingHours,
+        daysLeft: args.month.daysLeft,
+        perDayNeeded: args.month.perDayNeeded,
+        paceDeltaHours: args.month.paceDeltaHours,
+      }
+    : null;
+
+  return {
+    now: new Date(args.now).toISOString(),
+    // Facts carry UTC instants; naming the zone lets the coach present them on
+    // the user's own clock.
+    timeZone: resolveTimeZone(),
+    utcOffsetMinutes: new Date(args.now).getTimezoneOffset() * -1,
+    dailyGoalHours: goalHours,
+    today: args.intel.facts,
+    week,
+    month,
+    backlogHours: args.stats?.backlogHours ?? null,
+    streak: args.stats?.streak ?? null,
+  };
+}
+
+/** Best-effort IANA zone for the running browser, falling back to UTC. */
+function resolveTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
 }
 
 /** Assign side-by-side columns to overlapping events (Outlook style). */

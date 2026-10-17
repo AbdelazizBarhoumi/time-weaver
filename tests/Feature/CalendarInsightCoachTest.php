@@ -361,4 +361,175 @@ class CalendarInsightCoachTest extends TestCase
 
         Http::assertSentCount(2);
     }
+
+    /* ------------------------------------------------------------ chat */
+
+    /** @return array<int, array{role: string, content: string}> */
+    private function chatMessages(): array
+    {
+        return [
+            ['role' => 'user', 'content' => 'How much free time do I have today?'],
+            ['role' => 'assistant', 'content' => 'You have 3 hours free.'],
+            ['role' => 'user', 'content' => 'And what should I do next?'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function chatContext(): array
+    {
+        return [
+            'now' => '2026-10-14T12:00:00.000Z',
+            'timeZone' => 'Europe/Berlin',
+            'utcOffsetMinutes' => 120,
+            'dailyGoalHours' => 8,
+            'today' => $this->facts(),
+            'week' => [
+                'startDayKey' => '2026-10-12',
+                'requiredDays' => [1, 2, 3, 4, 5],
+                'targetHours' => 40,
+                'doneHours' => 16,
+                'remainingHours' => 24,
+            ],
+            'month' => [
+                'label' => 'October 2026',
+                'doneHours' => 60,
+                'targetHours' => 176,
+                'remainingHours' => 116,
+                'daysLeft' => 12,
+                'perDayNeeded' => 9.7,
+                'paceDeltaHours' => -4,
+            ],
+            'backlogHours' => 2.5,
+            'streak' => 4,
+        ];
+    }
+
+    protected function postChat(array $overrides = []): TestResponse
+    {
+        return $this->postJson('/api/calendar/coach/chat', array_merge([
+            'messages' => $this->chatMessages(),
+            'context' => $this->chatContext(),
+        ], $overrides));
+    }
+
+    public function test_chat_requires_authentication(): void
+    {
+        auth()->logout();
+
+        $this->postChat()->assertStatus(401);
+    }
+
+    public function test_chat_reports_unavailable_when_not_configured(): void
+    {
+        config(['services.gemini.key' => null]);
+
+        Http::fake();
+        $this->postChat()->assertStatus(503)->assertJson(['available' => false]);
+        Http::assertNothingSent();
+    }
+
+    public function test_chat_returns_a_reply_and_replays_the_transcript(): void
+    {
+        $this->fakeReply('You have about 3 hours of free time today.');
+
+        $this->postChat()
+            ->assertStatus(200)
+            ->assertJson(['available' => true, 'reply' => 'You have about 3 hours of free time today.']);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), 'generativelanguage.googleapis.com/v1beta/interactions')
+                && $request['model'] === 'gemini-2.5-flash'
+                && $request['store'] === false
+                && str_contains($request['system_instruction'], 'Current snapshot:')
+                && str_contains($request['system_instruction'], '"perDayNeeded": 9.7')
+                && str_contains($request['system_instruction'], 'Europe/Berlin')
+                && str_contains($request['system_instruction'], '+02:00')
+                && str_contains($request['input'], 'User: How much free time do I have today?')
+                && str_contains($request['input'], 'Coach: You have 3 hours free.')
+                && str_contains($request['input'], 'User: And what should I do next?')
+                && str_contains($request['input'], 'Reply to the last User message now, as the Coach.');
+        });
+    }
+
+    public function test_chat_validates_the_payload(): void
+    {
+        $this->postJson('/api/calendar/coach/chat', [])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['messages', 'context']);
+    }
+
+    public function test_chat_rejects_an_unknown_role(): void
+    {
+        $this->postChat(['messages' => [['role' => 'system', 'content' => 'hi']]])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['messages.0.role']);
+    }
+
+    public function test_chat_rejects_a_conversation_not_ending_with_the_user(): void
+    {
+        Http::fake();
+
+        $this->postChat(['messages' => [
+            ['role' => 'user', 'content' => 'hi'],
+            ['role' => 'assistant', 'content' => 'hello'],
+        ]])->assertStatus(422);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_chat_rejects_too_many_messages(): void
+    {
+        $messages = [];
+        for ($i = 0; $i < 25; $i++) {
+            $messages[] = ['role' => 'user', 'content' => "message {$i}"];
+        }
+
+        Http::fake();
+
+        $this->postChat(['messages' => $messages])->assertStatus(422)->assertJsonValidationErrors(['messages']);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_chat_does_not_cache_turns(): void
+    {
+        $this->fakeReply('Sure.');
+
+        $this->postChat()->assertStatus(200);
+        $this->postChat()->assertStatus(200);
+
+        Http::assertSentCount(2);
+    }
+
+    public function test_chat_returns_502_when_gemini_fails(): void
+    {
+        Http::fake([
+            'generativelanguage.googleapis.com/*' => Http::response(['error' => ['message' => 'boom']], 500),
+        ]);
+
+        $this->postChat()->assertStatus(502)->assertJson(['available' => true]);
+    }
+
+    public function test_chat_service_ignores_thought_steps(): void
+    {
+        Http::fake(['generativelanguage.googleapis.com/*' => Http::response(
+            $this->interaction('You have 3 hours free.', [
+                ['type' => 'thought', 'signature' => 'abc', 'summary' => [['type' => 'text', 'text' => 'thinking']]],
+            ]),
+        )]);
+
+        $this->assertSame('You have 3 hours free.', (new GeminiCoachService)->chat(
+            $this->chatMessages(),
+            $this->chatContext(),
+        ));
+    }
+
+    public function test_chat_service_throws_when_not_configured(): void
+    {
+        config(['services.gemini.key' => null]);
+
+        $this->expectException(RuntimeException::class);
+
+        (new GeminiCoachService)->chat($this->chatMessages(), $this->chatContext());
+    }
 }

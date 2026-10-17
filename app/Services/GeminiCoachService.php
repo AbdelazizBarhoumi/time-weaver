@@ -80,6 +80,30 @@ class GeminiCoachService
     }
 
     /**
+     * Continue (or start) a multi-turn coaching conversation.
+     *
+     * The API is used statelessly: `store` is false and the whole transcript is
+     * replayed on every turn. Rather than echoing the model's opaque steps back
+     * (which would drag provider-specific signatures through the client), the
+     * transcript is rendered as plain text, which keeps each turn independent.
+     *
+     * @param  array<int, array{role: string, content: string}>  $messages  Oldest first; ends with the new user turn.
+     * @param  array<string, mixed>  $context  A fresh snapshot of the user's day/week/month data.
+     *
+     * @throws RuntimeException when the service is not configured, the request fails, or the reply is unusable.
+     */
+    public function chat(array $messages, array $context): string
+    {
+        if (! $this->isConfigured()) {
+            throw new RuntimeException('Gemini is not configured.');
+        }
+
+        $response = $this->send($this->chatPayload($messages, $context));
+
+        return $this->extractText($response);
+    }
+
+    /**
      * The request body: model, system instruction, user input and sampling
      * controls.
      *
@@ -89,12 +113,42 @@ class GeminiCoachService
     private function payload(array $facts): array
     {
         return [
-            'model' => (string) config('services.gemini.model', 'gemini-2.5-flash'),
+            'model' => $this->model(),
             'system_instruction' => $this->systemPrompt(),
             'input' => $this->userPrompt($facts),
             'generation_config' => $this->generationConfig(),
             'store' => (bool) config('services.gemini.store', false),
         ];
+    }
+
+    /**
+     * The request body for a chat turn: the same model and sampling controls,
+     * but the system instruction carries a data snapshot and the input is the
+     * replayed transcript.
+     *
+     * @param  array<int, array{role: string, content: string}>  $messages
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    private function chatPayload(array $messages, array $context): array
+    {
+        return [
+            'model' => $this->model(),
+            'system_instruction' => $this->chatSystemPrompt($context),
+            'input' => $this->chatUserPrompt($messages),
+            'generation_config' => $this->generationConfig(),
+            'store' => (bool) config('services.gemini.store', false),
+        ];
+    }
+
+    /**
+     * The configured model, with a sane fallback for an unset value.
+     */
+    private function model(): string
+    {
+        $model = config('services.gemini.model');
+
+        return is_string($model) && trim($model) !== '' ? trim($model) : 'gemini-3.5-flash-lite';
     }
 
     /**
@@ -343,5 +397,88 @@ class GeminiCoachService
             '',
             'Write the coaching read-out now.',
         ]);
+    }
+
+    /**
+     * Persona + grounding rules + the data snapshot the chat can answer from.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function chatSystemPrompt(array $context): string
+    {
+        $json = json_encode($context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        $timeZone = is_string($context['timeZone'] ?? null) && $context['timeZone'] !== ''
+            ? $context['timeZone']
+            : 'unknown';
+        $offsetMinutes = $context['utcOffsetMinutes'] ?? null;
+
+        return implode("\n", [
+            'You are the AI coach inside a work-hours tracker called ShiftGrid.',
+            'The user asks you questions about their own schedule, workload and pace, and you guide them.',
+            'The snapshot below is the single source of truth. Use only the data in it.',
+            'Never invent events, meetings, hours or numbers, and never contradict the snapshot.',
+            'Do the arithmetic yourself wherever the snapshot supports it: free = window minus busy,',
+            'still owed today = remaining goal, week left = target minus done, per day = remaining divided by days left.',
+            'Never answer "I cannot tell" when a subtraction or division over the snapshot answers the question.',
+            'Treat the requiredDays list as the days the user must work; any other weekday is optional, not owed.',
+            'If the snapshot genuinely lacks something, say so plainly and ask for what you need.',
+            'Answer the user\'s actual question first, then add at most one short, concrete suggestion.',
+            'Be concise: 1 to 4 short sentences, or a few short lines.',
+            'Plain text only — no markdown, no headings, no bullet characters, no asterisks.',
+            'Quote concrete times and durations from the snapshot when they help.',
+            'Keep the thread coherent: you can refer back to earlier turns in the conversation.',
+            sprintf(
+                'Every timestamp is ISO-8601 in UTC (it ends with Z). The user is in %s (%s), so convert',
+                $timeZone,
+                $this->formatUtcOffset($offsetMinutes),
+            ),
+            'each time into that local clock and never quote a raw ISO timestamp back to the user.',
+            '',
+            'Current snapshot:',
+            $json === false ? '{"error":"context could not be encoded"}' : $json,
+        ]);
+    }
+
+    /**
+     * Render a UTC offset as "+02:00", "−05:30" or "UTC" when unavailable.
+     */
+    private function formatUtcOffset(mixed $minutes): string
+    {
+        if (! is_numeric($minutes)) {
+            return 'an unknown offset';
+        }
+
+        $minutes = (int) $minutes;
+        $sign = $minutes < 0 ? '-' : '+';
+        $absolute = abs($minutes);
+
+        return sprintf('%s%02d:%02d', $sign, intdiv($absolute, 60), $absolute % 60);
+    }
+
+    /**
+     * Render the replayed transcript as plain text, ending with the turn to answer.
+     *
+     * @param  array<int, array{role: string, content: string}>  $messages
+     */
+    private function chatUserPrompt(array $messages): string
+    {
+        $lines = ['Conversation so far (oldest first):'];
+
+        foreach ($messages as $message) {
+            $content = trim((string) ($message['content'] ?? ''));
+
+            if ($content === '') {
+                continue;
+            }
+
+            $role = ($message['role'] ?? '') === 'assistant' ? 'Coach' : 'User';
+            $lines[] = "{$role}: {$content}";
+        }
+
+        $lines[] = '';
+        $lines[] = 'Reply to the last User message now, as the Coach.';
+
+        return implode("\n", $lines);
     }
 }

@@ -60,6 +60,7 @@ Route::middleware('auth:web')->group(function () {
     // Calendar: day intelligence + optional AI coach
     Route::get('calendar/coach/status', [CalendarInsightController::class, 'status']);
     Route::post('calendar/coach', [CalendarInsightController::class, 'coach']);
+    Route::post('calendar/coach/chat', [CalendarInsightController::class, 'chat']);
 
     // Debug route
     Route::get('/debug-policy', function () {

@@ -8,9 +8,11 @@ import { CalendarView, type CalendarDensity } from "@/components/CalendarView";
 import { MonthView } from "@/components/MonthView";
 import { AccountsCard, BudgetCard, Legend, SettingsCard, WorkableTimeCard } from "@/components/CalendarSidebar";
 import { DayIntelligenceCard } from "@/components/DayIntelligenceCard";
+import { CoachChatFab } from "@/components/CoachChatFab";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import {
   addDays,
+  buildCoachContext,
   computeDayBudget,
   computeDayInsights,
   computeWorkableTimeLeft,
@@ -226,6 +228,19 @@ function CalendarPage() {
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [events, focusBlocks, settings, now, sessions, statsQ.data, currentMonth],
+  );
+
+  const coachContext = useMemo(
+    () =>
+      buildCoachContext({
+        intel,
+        settings,
+        now,
+        stats: statsQ.data ?? null,
+        month: currentMonth ?? null,
+        goalHours: DAILY_GOAL_HOURS,
+      }),
+    [intel, settings, now, statsQ.data, currentMonth],
   );
 
   const summaries: DaySummary[] = useMemo(() => {
@@ -532,6 +547,8 @@ function CalendarPage() {
           <Legend />
         </aside>
       </main>
+
+      <CoachChatFab context={coachContext} />
     </div>
   );
 
