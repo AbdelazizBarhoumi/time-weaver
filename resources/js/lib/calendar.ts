@@ -227,6 +227,8 @@ export const calendarApi = {
       })
       .then((r) => r.data),
   sync: () => api.post<SyncResult>("/calendar/sync").then((r) => r.data),
+  moveEvent: (input: { cacheId: number; start: string; end: string }) =>
+    api.put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, { start: input.start, end: input.end }).then((r) => r.data),
   events: (from: string, to: string) =>
     api
       .get<{ events: CalendarEvent[]; errors: { accountId: number; email: string; message: string }[] }>(
@@ -259,6 +261,8 @@ export const calendarApi = {
     api.get<FocusBlock[]>("/calendar/focus-blocks", { params: { from, to } }).then((r) => r.data),
   createFocusBlock: (b: { title?: string; start: string; end: string }) =>
     api.post<FocusBlock>("/calendar/focus-blocks", b).then((r) => r.data),
+  updateFocusBlock: (id: number, patch: { title?: string; start?: string; end?: string }) =>
+    api.put<FocusBlock>(`/calendar/focus-blocks/${id}`, patch).then((r) => r.data),
   deleteFocusBlock: (id: number) => api.delete(`/calendar/focus-blocks/${id}`),
   sideTasks: () => api.get<SideTask[]>("/side-tasks").then((r) => r.data),
   createSideTask: (t: { title: string; estimateMinutes: number; start?: string | null; blocksWork?: boolean }) =>
@@ -380,9 +384,15 @@ export const useDeleteCalendarEvent = () =>
   useCalendarMutation((input: DeleteEventInput) => calendarApi.deleteEvent(input));
 export const useSyncCalendars = () => useCalendarMutation(() => calendarApi.sync());
 export const useTagEvent = () => useCalendarMutation((input: TagEventInput) => calendarApi.tag(input));
+export const useMoveEvent = () =>
+  useCalendarMutation((input: { cacheId: number; start: string; end: string }) => calendarApi.moveEvent(input));
 export const useSaveCalendarSettings = () => useCalendarMutation((s: CalendarSettings) => calendarApi.saveSettings(s));
 export const useCreateFocusBlock = () =>
   useCalendarMutation((b: { title?: string; start: string; end: string }) => calendarApi.createFocusBlock(b));
+export const useUpdateFocusBlock = () =>
+  useCalendarMutation((args: { id: number; patch: { title?: string; start?: string; end?: string } }) =>
+    calendarApi.updateFocusBlock(args.id, args.patch),
+  );
 export const useDeleteFocusBlock = () => useCalendarMutation((id: number) => calendarApi.deleteFocusBlock(id));
 export const useCreateSideTask = () =>
   useCalendarMutation(

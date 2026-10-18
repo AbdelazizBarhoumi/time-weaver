@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\CalendarAccount;
 use App\Models\CalendarEvent;
 use App\Models\CalendarEventDismissal;
+use App\Models\CalendarEventOverride;
 use Illuminate\Support\Carbon;
 
 /**
@@ -136,6 +137,7 @@ class CalendarSyncService
 
         $account->tags()->delete();
         $account->dismissals()->delete();
+        CalendarEventOverride::where('calendar_account_id', $account->id)->delete();
         $account->update(['last_synced_at' => null]);
 
         return $deleted;

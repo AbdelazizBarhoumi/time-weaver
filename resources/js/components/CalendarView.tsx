@@ -6,12 +6,14 @@ import {
   type CSSProperties,
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Briefcase, CalendarClock, CalendarOff, Check, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SegmentBreakdown } from "@/components/SegmentBreakdown";
+import { allDayKeyMs, localDayKey, useBlockDrag, type DragControls, type DragEntity, type DragMode } from "@/lib/blockDrag";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -75,6 +77,12 @@ interface Props {
   onDeleteSession: (s: CalendarSession) => void;
   /** Drop or click-place a side task at a concrete time. */
   onPlaceTask: (task: SideTask, start: Date) => void;
+  /** Move or resize a placed task straight from the grid. */
+  onScheduleTask: (task: SideTask, start: Date, end: Date) => void;
+  /** Move or resize a focus block from the grid. */
+  onMoveFocus: (block: FocusBlock, start: Date, end: Date) => void;
+  /** Move a cached Google event (local override, never written back to Google). */
+  onMoveEvent: (event: CalendarEvent, start: Date, end: Date) => void;
   /** Tick a task off (or reopen it) straight from the grid. */
   onCompleteTask: (task: SideTask, completed: boolean) => void;
   onDeleteTask: (task: SideTask) => void;
@@ -110,6 +118,20 @@ export function CalendarView(props: Props) {
   const heightPx = (totalMin / 60) * HOUR_PX;
   const days = useMemo(() => Array.from({ length: dayCount }, (_, i) => addDays(firstDay, i)), [firstDay, dayCount]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // One drag engine drives every block on the grid; the block that started the
+  // drag reports its kind, and we route the committed times back to the page.
+  const drag = useBlockDrag((entity, start, end) => {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    if (entity.kind === "event") {
+      props.onMoveEvent(entity.payload as CalendarEvent, startDate, endDate);
+    } else if (entity.kind === "focus") {
+      props.onMoveFocus(entity.payload as FocusBlock, startDate, endDate);
+    } else {
+      props.onScheduleTask(entity.payload as SideTask, startDate, endDate);
+    }
+  });
 
   const placingTask = props.placingId === null ? null : props.tasks.find((t) => t.id === props.placingId) ?? null;
   const { onCancelPlacing } = props;
@@ -158,7 +180,7 @@ export function CalendarView(props: Props) {
             {tz.split("/").pop()}
           </div>
           {Array.from({ length: dayCount }, (_, i) => addDays(firstDay, i)).map((d) => (
-            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} onDeleteEvent={props.onDeleteEvent} />
+            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} onDeleteEvent={props.onDeleteEvent} drag={drag} />
           ))}
         </div>
 
@@ -188,6 +210,7 @@ export function CalendarView(props: Props) {
               winStart={winStart}
               winEnd={winEnd}
               workBand={workBand}
+              drag={drag}
             />
           ))}
         </div>
@@ -296,26 +319,93 @@ function DeleteEventButton({
   );
 }
 
+/**
+ * Thin strips on a block's edges that stretch it instead of moving it. They sit
+ * above the block body, so a press here resizes while a press anywhere else
+ * drags the whole block to another time or day.
+ */
+function ResizeHandles({
+  entity,
+  onResize,
+}: {
+  entity: DragEntity;
+  onResize: (event: ReactPointerEvent, entity: DragEntity, mode: DragMode) => void;
+}) {
+  return (
+    <>
+      <span
+        role="presentation"
+        title="Drag to change the start time"
+        onPointerDown={(event) => onResize(event, entity, "resize-start")}
+        className="absolute inset-x-0 top-0 h-1.5 cursor-ns-resize touch-none bg-neon/0 hover:bg-neon/30"
+      />
+      <span
+        role="presentation"
+        title="Drag to change the end time"
+        onPointerDown={(event) => onResize(event, entity, "resize-end")}
+        className="absolute inset-x-0 bottom-0 h-1.5 cursor-ns-resize touch-none bg-neon/0 hover:bg-neon/30"
+      />
+    </>
+  );
+}
+
 function DayHeader({
   day,
   now,
   settings,
   events,
   onDeleteEvent,
+  drag,
 }: {
   day: Date;
   now: number;
   settings: CalendarSettings;
   events: CalendarEvent[];
   onDeleteEvent: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
+  drag: DragControls;
 }) {
   const isToday = sameDay(day, new Date(now));
   const working = isWorkDay(day, settings);
   const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
   const dayAllDay = events.filter((e) => e.start <= key && key < e.end);
+  const dropTarget = drag.active?.entity.allDay === true && drag.active.dayKey === key;
+
+  const beginAllDayDrag = (event: ReactPointerEvent, e: CalendarEvent) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    event.stopPropagation();
+    drag.start(
+      {
+        kind: "event",
+        key: e.id,
+        allDay: true,
+        start: allDayKeyMs(e.start.slice(0, 10)),
+        end: allDayKeyMs(e.end.slice(0, 10)),
+        payload: e,
+      },
+      "move",
+      0,
+      { x: event.clientX, y: event.clientY },
+    );
+  };
 
   return (
-    <div className={cn("border-l border-line px-2 py-2", !working && "bg-void/40")}>
+    <div
+      data-day-header={key}
+      className={cn("border-l border-line px-2 py-2", !working && "bg-void/40", dropTarget && "bg-neon/10 ring-1 ring-inset ring-neon")}
+      onPointerMove={(event) => {
+        if (drag.active) {
+          drag.hover(key, 0, { x: event.clientX, y: event.clientY });
+        }
+      }}
+      onPointerUp={(event) => {
+        if (drag.active) {
+          drag.drop(key, 0, { x: event.clientX, y: event.clientY });
+        }
+      }}
+    >
       <div className={cn("font-mono text-[11px] uppercase tracking-widest", isToday ? "text-neon" : "text-mut")}>
         {day.toLocaleDateString("en", { weekday: "short" })}{" "}
         <span className={cn("text-base font-semibold", isToday ? "text-neon" : "text-ink")}>{day.getDate()}</span>
@@ -324,9 +414,13 @@ function DayHeader({
       {dayAllDay.slice(0, 3).map((e) => (
         <div
           key={e.id}
-          className="group relative mt-1 flex items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink"
+          onPointerDown={(event) => beginAllDayDrag(event, e)}
+          className={cn(
+            "group relative mt-1 flex cursor-grab touch-none items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink",
+            drag.active?.entity.key === e.id && drag.active.entity.allDay && "opacity-40",
+          )}
           style={{ background: `${e.accountColor}33`, borderLeft: `3px solid ${e.accountColor}` }}
-          title={`${e.title} · ${e.accountEmail}`}
+          title={`${e.title} · ${e.accountEmail} · Drag to another day`}
         >
           <span className="truncate">{e.title}</span>
           <DeleteEventButton
@@ -352,15 +446,17 @@ function DayColumn(
     winEnd: number;
     density: CalendarDensity;
     workBand: { top: number; bottom: number };
+    drag: DragControls;
   },
 ) {
   const { day, now, hours, heightPx, minuteToPx, msToPx, winStart, winEnd, density, workBand, settings } = props;
   const ref = useRef<HTMLDivElement>(null);
-  const [drag, setDrag] = useState<{ a: number; b: number } | null>(null);
+  const [createDrag, setCreateDrag] = useState<{ a: number; b: number } | null>(null);
   const isToday = sameDay(day, new Date(now));
   const working = isWorkDay(day, settings);
   const dayStart = startOfDay(day).getTime();
   const dayEnd = dayStart + 86_400_000;
+  const dayKey = localDayKey(day);
 
   const items: {
     kind: "event" | "focus" | "task";
@@ -407,17 +503,17 @@ function DayColumn(
     if (e.button !== 0 || e.target !== e.currentTarget) return;
     const m = yToMinute(e.clientY);
     // While a task is armed, a click lands it here instead of starting a focus block.
-    setDrag({ a: m, b: m + (placingTask ? placingTask.estimateMinutes : SNAP_MIN * 2) });
+    setCreateDrag({ a: m, b: m + (placingTask ? placingTask.estimateMinutes : SNAP_MIN * 2) });
   };
   const onMouseMove = (e: ReactMouseEvent) => {
-    if (!drag) return;
-    setDrag({ ...drag, b: yToMinute(e.clientY) });
+    if (!createDrag) return;
+    setCreateDrag({ ...createDrag, b: yToMinute(e.clientY) });
   };
   const onMouseUp = () => {
-    if (!drag) return;
-    const s = Math.min(drag.a, drag.b);
-    const en = Math.max(drag.a, drag.b);
-    setDrag(null);
+    if (!createDrag) return;
+    const s = Math.min(createDrag.a, createDrag.b);
+    const en = Math.max(createDrag.a, createDrag.b);
+    setCreateDrag(null);
     if (placingTask) {
       // The task's own estimate sets the length; only the drop time matters.
       props.onPlaceTask(placingTask, new Date(dayStart + s * 60_000));
@@ -425,6 +521,29 @@ function DayColumn(
     }
     if (en - s < SNAP_MIN) return;
     props.onCreateFocus(new Date(dayStart + s * 60_000), new Date(dayStart + en * 60_000));
+  };
+
+  /** Start moving a block, remembering how far into it the pointer grabbed. */
+  const beginBlockMove = (event: ReactPointerEvent, entity: DragEntity) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+      return;
+    }
+
+    event.stopPropagation();
+    const blockStartMinute = (entity.start - dayStart) / 60_000;
+    const durationMinute = (entity.end - entity.start) / 60_000;
+    const grabbed = Math.max(0, Math.min(durationMinute, yToMinute(event.clientY) - blockStartMinute));
+    props.drag.start(entity, "move", grabbed, { x: event.clientX, y: event.clientY });
+  };
+
+  /** Start stretching a block from one of its edges. */
+  const beginBlockResize = (event: ReactPointerEvent, entity: DragEntity, mode: DragMode) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.stopPropagation();
+    props.drag.start(entity, mode, 0, { x: event.clientX, y: event.clientY });
   };
 
   const onDragOver = (e: ReactDragEvent) => {
@@ -441,19 +560,53 @@ function DayColumn(
     props.onPlaceTask(task, new Date(dayStart + yToMinute(e.clientY) * 60_000));
   };
 
+  /** While a timed block is being dragged, follow the pointer over this column. */
+  const onColumnPointerMove = (event: ReactPointerEvent) => {
+    if (!props.drag.active || props.drag.active.entity.allDay) {
+      return;
+    }
+
+    props.drag.hover(dayKey, yToMinute(event.clientY), { x: event.clientX, y: event.clientY });
+  };
+  const onColumnPointerUp = (event: ReactPointerEvent) => {
+    if (!props.drag.active || props.drag.active.entity.allDay) {
+      return;
+    }
+
+    props.drag.drop(dayKey, yToMinute(event.clientY), { x: event.clientX, y: event.clientY });
+  };
+
+  const dragPreview = props.drag.active;
+  const ghost = dragPreview && !dragPreview.entity.allDay && dragPreview.dayKey === dayKey
+    ? (() => {
+        const top = Math.max(0, msToPx(day, dragPreview.start));
+        const bottom = Math.min(heightPx, msToPx(day, dragPreview.end));
+        if (bottom <= 0 || top >= heightPx) return null;
+        return { top, height: Math.max(18, bottom - top) };
+      })()
+    : null;
+  const isDragSource = (key: string) => dragPreview?.entity.key === key;
+
   const nowMin = (now - dayStart) / 60_000;
 
   return (
     <div
       ref={ref}
-      data-day={`${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`}
-      className={cn("relative select-none border-l border-line", isToday && "bg-neon/[0.02]", !working && "bg-void/40")}
+      data-day={dayKey}
+      className={cn(
+        "relative select-none border-l border-line",
+        isToday && "bg-neon/[0.02]",
+        !working && "bg-void/40",
+        ghost && "bg-neon/[0.06]",
+      )}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
-      onMouseLeave={() => setDrag(null)}
+      onMouseLeave={() => setCreateDrag(null)}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      onPointerMove={onColumnPointerMove}
+      onPointerUp={onColumnPointerUp}
     >
       {hours.map((m) => (
         <div key={m} className="pointer-events-none absolute inset-x-0 border-t border-line/70" style={{ top: minuteToPx(m) }} />
@@ -555,17 +708,20 @@ function DayColumn(
         if (item.kind === "task" && item.task) {
           const t = item.task;
           const done = isSideTaskDone(t, now);
+          const entity: DragEntity = { kind: "task", key: `t-${t.id}`, allDay: false, start: iv.start, end: iv.end, payload: t };
           return (
             <div
-              key={`t-${t.id}`}
+              key={entity.key}
+              onPointerDown={(event) => beginBlockMove(event, entity)}
               className={cn(
-                "group absolute overflow-hidden rounded border border-amber-400/70 bg-amber-400/15 px-1.5 py-1 text-[11px] text-ink",
+                "group absolute touch-none cursor-grab overflow-hidden rounded border border-amber-400/70 bg-amber-400/15 px-1.5 py-1 text-[11px] text-ink",
                 done && "opacity-60",
+                isDragSource(entity.key) && "opacity-40",
               )}
               style={style}
               title={`${t.title} · ${formatHM(t.estimateMinutes * 60_000)}${
                 t.blocksWork ? " · blocks work" : " · flexible"
-              }${t.completedAt ? ` · finished ${formatTime(t.completedAt)}` : ""}`}
+              }${t.completedAt ? ` · finished ${formatTime(t.completedAt)}` : ""} · Drag to reschedule`}
             >
               <div className="flex items-center gap-1 font-medium text-amber-300">
                 <span className="truncate" style={done ? { textDecoration: "line-through" } : undefined}>
@@ -623,17 +779,24 @@ function DayColumn(
                   <Trash2 className="h-3 w-3" />
                 </button>
               </div>
+              <ResizeHandles entity={entity} onResize={beginBlockResize} />
             </div>
           );
         }
 
         if (item.kind === "focus" && item.block) {
           const b = item.block;
+          const entity: DragEntity = { kind: "focus", key: `f-${b.id}`, allDay: false, start: iv.start, end: iv.end, payload: b };
           return (
             <div
-              key={`f-${b.id}`}
-              className="group absolute overflow-hidden rounded border border-neon bg-l1 px-1.5 py-1 text-[11px] text-ink shadow"
+              key={entity.key}
+              onPointerDown={(event) => beginBlockMove(event, entity)}
+              className={cn(
+                "group absolute touch-none cursor-grab overflow-hidden rounded border border-neon bg-l1 px-1.5 py-1 text-[11px] text-ink shadow",
+                isDragSource(entity.key) && "opacity-40",
+              )}
               style={style}
+              title={`${b.title} · Drag to reschedule`}
             >
               <div className="flex items-center gap-1 font-medium text-neon">
                 <Briefcase className="h-3 w-3" /> <span className="truncate">{b.title}</span>
@@ -657,18 +820,25 @@ function DayColumn(
                   <Trash2 className="h-3 w-3" />
                 </button>
               </div>
+              <ResizeHandles entity={entity} onResize={beginBlockResize} />
             </div>
           );
         }
 
         const e = item.event;
         if (!e) return null;
+        const entity: DragEntity = { kind: "event", key: e.id, allDay: false, start: iv.start, end: iv.end, payload: e };
         return (
           <div
-            key={e.id}
+            key={entity.key}
             role="button"
             tabIndex={0}
-            onClick={() => props.onToggleWork(e)}
+            onPointerDown={(event) => beginBlockMove(event, entity)}
+            onClick={() => {
+              // A drag ends in a click on some browsers; ignore that one.
+              if (props.drag.wasDragged()) return;
+              props.onToggleWork(e);
+            }}
             onKeyDown={(ev) => {
               if (ev.key === "Enter" || ev.key === " ") {
                 ev.preventDefault();
@@ -679,12 +849,13 @@ function DayColumn(
               ev.preventDefault();
               props.onResetWork(e);
             }}
-            title={`${e.title}\n${e.accountEmail}${e.calendarName ? ` · ${e.calendarName}` : ""}\nClick: ${
+            title={`${e.title}\n${e.accountEmail}${e.calendarName ? ` · ${e.calendarName}` : ""}\nDrag to reschedule · Click: ${
               e.isWork ? "not work" : "mark as work"
             } · Right-click: back to automatic`}
             className={cn(
-              "group absolute cursor-pointer overflow-hidden rounded px-1.5 py-1 text-left text-[11px] text-ink transition hover:brightness-125",
+              "group absolute cursor-grab touch-none overflow-hidden rounded px-1.5 py-1 text-left text-[11px] text-ink transition hover:brightness-125",
               e.isWork ? "ring-1 ring-neon" : "opacity-90",
+              isDragSource(entity.key) && "opacity-40",
             )}
             style={{
               ...style,
@@ -706,20 +877,29 @@ function DayColumn(
               onDelete={props.onDeleteEvent}
               className="absolute right-0.5 top-0.5 rounded bg-panel/80 p-0.5 text-mut/60 hover:text-destructive"
             />
+            <ResizeHandles entity={entity} onResize={beginBlockResize} />
           </div>
         );
       })}
 
-      {/* Drag preview */}
-      {drag && (
+      {/* Ghost of the block being dragged, snapped to where it would land */}
+      {ghost && (
+        <div
+          className="pointer-events-none absolute inset-x-1 z-10 rounded border border-dashed border-neon bg-neon/20"
+          style={{ top: ghost.top, height: ghost.height }}
+        />
+      )}
+
+      {/* Drag preview for click/drag-to-create */}
+      {createDrag && (
         <div
           className={cn(
             "pointer-events-none absolute inset-x-1 rounded border",
             placingTask ? "border-amber-400 bg-amber-400/20" : "border-neon bg-neon/20",
           )}
           style={{
-            top: minuteToPx(Math.min(drag.a, drag.b)),
-            height: Math.abs(minuteToPx(drag.b) - minuteToPx(drag.a)),
+            top: minuteToPx(Math.min(createDrag.a, createDrag.b)),
+            height: Math.abs(minuteToPx(createDrag.b) - minuteToPx(createDrag.a)),
           }}
         />
       )}

@@ -35,18 +35,21 @@ import {
   useDeleteFocusBlock,
   useDeleteSideTask,
   useFocusBlocks,
+  useMoveEvent,
   usePurgeAccountEvents,
   useRestoreAccountEvents,
   useSideTasks,
   useSyncCalendars,
   useTagEvent,
   useUpdateCalendarAccount,
+  useUpdateFocusBlock,
   useUpdateSideTask,
   type CalendarEvent,
   type CalendarSession,
   type CalendarSettings,
   type DaySummary,
   type DeleteScope,
+  type FocusBlock,
   type Interval,
   type SideTask,
 } from "@/lib/calendar";
@@ -148,6 +151,8 @@ function CalendarPage() {
   const tag = useTagEvent();
   const createFocus = useCreateFocusBlock();
   const deleteFocus = useDeleteFocusBlock();
+  const moveFocus = useUpdateFocusBlock();
+  const moveEvent = useMoveEvent();
   const updateTask = useUpdateSideTask();
   const deleteTask = useDeleteSideTask();
   const createSession = useCreateSession();
@@ -393,6 +398,47 @@ function CalendarPage() {
     );
   };
 
+  /** Move or stretch a placed task straight from the grid. */
+  const scheduleTask = (task: SideTask, start: Date, end: Date) => {
+    const estimateMinutes = Math.max(5, Math.round((end.getTime() - start.getTime()) / 60_000));
+    updateTask.mutate(
+      { id: task.id, patch: { start: start.toISOString(), estimateMinutes } },
+      {
+        onSuccess: () =>
+          toast.success(
+            `Moved "${task.title}" · ${start.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })}`,
+          ),
+        onError: () => toast.error("Could not move that task."),
+      },
+    );
+  };
+
+  /** Move or stretch a planned work block from the grid. */
+  const moveFocusBlock = (block: FocusBlock, start: Date, end: Date) => {
+    moveFocus.mutate(
+      { id: block.id, patch: { start: start.toISOString(), end: end.toISOString() } },
+      {
+        onSuccess: () => toast.success(`Moved "${block.title}"`),
+        onError: () => toast.error("Could not move that block."),
+      },
+    );
+  };
+
+  /**
+   * Move a Google event to a new time. This is stored locally — the event is not
+   * written back to Google — so a later sync cannot undo the drag.
+   */
+  const moveCalendarEvent = (event: CalendarEvent, start: Date, end: Date) => {
+    const serialize = (date: Date) => (event.allDay ? date.toISOString().slice(0, 10) : date.toISOString());
+    moveEvent.mutate(
+      { cacheId: event.cacheId, start: serialize(start), end: serialize(end) },
+      {
+        onSuccess: () => toast.success(`Moved "${event.title}"`),
+        onError: () => toast.error("Could not move that event."),
+      },
+    );
+  };
+
   const completeTask = (task: SideTask, completed: boolean) => {
     updateTask.mutate(
       { id: task.id, patch: { completed } },
@@ -592,6 +638,9 @@ function CalendarPage() {
                 onResetWork={(e) => onResetWork(e)}
                 onDeleteEvent={removeEvent}
                 onPlaceTask={placeTask}
+                onScheduleTask={scheduleTask}
+                onMoveFocus={moveFocusBlock}
+                onMoveEvent={moveCalendarEvent}
                 onCompleteTask={completeTask}
                 onDeleteTask={removeTask}
                 onUnplaceTask={unplaceTask}
@@ -632,8 +681,9 @@ function CalendarPage() {
             </>
           )}
           <p className="mt-3 font-mono text-[11px] text-mut">
-            Drag empty space to plan · Click an event to mark it as work (adds a tracked session) · Right-click to reset ·
-            Click a green gap to log that time · Drag a side task onto a day to schedule it
+            Drag empty space to plan · Drag an event, task or block to another time or day · Drag a block's top or bottom
+            edge to resize it · Click an event to mark it as work (adds a tracked session) · Right-click to reset · Click a
+            green gap to log that time · Drag a side task onto a day to schedule it
           </p>
         </div>
 

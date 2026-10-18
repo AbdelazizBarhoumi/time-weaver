@@ -45,6 +45,7 @@ Route::middleware('auth:web')->group(function () {
     // Calendar: events and manual work tags
     Route::get('calendar/events', [CalendarEventController::class, 'index']);
     Route::post('calendar/sync', [CalendarEventController::class, 'sync']);
+    Route::put('calendar/events/{event}', [CalendarEventController::class, 'update']);
     Route::delete('calendar/events/{event}', [CalendarEventController::class, 'destroy']);
     Route::post('calendar/events/tag', [CalendarEventController::class, 'tag']);
 

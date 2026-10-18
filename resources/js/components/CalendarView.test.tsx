@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@/test/utils";
 import { CalendarView } from "@/components/CalendarView";
-import { SIDE_TASK_DRAG_TYPE, type CalendarSettings, type SideTask } from "@/lib/calendar";
+import { SIDE_TASK_DRAG_TYPE, type CalendarEvent, type CalendarSettings, type FocusBlock, type SideTask } from "@/lib/calendar";
 
 const settings: CalendarSettings = {
   workStart: "09:00",
@@ -33,6 +33,31 @@ function task(overrides: Partial<SideTask> = {}): SideTask {
   };
 }
 
+function calendarEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
+  return {
+    id: "1|evt",
+    cacheId: 9,
+    eventId: "evt",
+    recurringEventId: null,
+    accountId: 1,
+    accountEmail: "me@example.com",
+    accountColor: "#5b9cff",
+    calendarId: "primary",
+    calendarName: "Personal",
+    title: "Standup",
+    start: at(15),
+    end: at(16),
+    allDay: false,
+    isWork: false,
+    workSource: null,
+    ...overrides,
+  };
+}
+
+function focusBlock(overrides: Partial<FocusBlock> = {}): FocusBlock {
+  return { id: 11, title: "Deep work", start: at(15), end: at(16), ...overrides };
+}
+
 const noop = () => {};
 
 function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
@@ -57,6 +82,9 @@ function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
       onStartFocus={noop}
       onDeleteSession={noop}
       onPlaceTask={noop}
+      onScheduleTask={noop}
+      onMoveFocus={noop}
+      onMoveEvent={noop}
       onCompleteTask={noop}
       onDeleteTask={noop}
       onUnplaceTask={noop}
@@ -67,8 +95,12 @@ function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
   );
 }
 
-function dayColumn(): HTMLElement {
-  return document.querySelector("[data-day]") as HTMLElement;
+function dayColumn(index = 0): HTMLElement {
+  return document.querySelectorAll("[data-day]")[index] as HTMLElement;
+}
+
+function dayHeader(index = 0): HTMLElement {
+  return document.querySelectorAll("[data-day-header]")[index] as HTMLElement;
 }
 
 /**
@@ -88,6 +120,25 @@ function dropEvent(taskId: string, clientY: number): Event {
   });
   return event;
 }
+
+/**
+ * happy-dom has no `PointerEvent`, so build the native one by hand. React's
+ * pointer handlers read `clientX`/`clientY`/`button` off it.
+ */
+function pointerEvent(type: string, clientY: number, clientX = 100): Event {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clientX", { value: clientX });
+  Object.defineProperty(event, "clientY", { value: clientY });
+  Object.defineProperty(event, "button", { value: 0 });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  return event;
+}
+
+// The 09:00–17:00 window is 448px tall, so 56px is one hour and the hour of a
+// `clientY` is 9 + clientY / 56. Grabbing a block at its top and releasing at
+// 224px should land it at 13:00.
+const BLOCK_TOP_15 = 6 * 56; // 15:00
+const DROP_13 = 4 * 56; // 13:00
 
 describe("CalendarView side tasks", () => {
   it("draws a placed task as an amber block labelled with its estimate", () => {
@@ -212,5 +263,90 @@ describe("CalendarView side tasks", () => {
     fireEvent.keyDown(window, { key: "Escape" });
 
     expect(onCancelPlacing).toHaveBeenCalled();
+  });
+});
+
+describe("CalendarView drag and drop", () => {
+  it("moves a placed task to another time within the day", () => {
+    const onScheduleTask = vi.fn();
+    renderView({ tasks: [task({ id: 7, start: at(15), end: at(16) })], onScheduleTask });
+
+    fireEvent(screen.getByTitle(/Clean the room/), pointerEvent("pointerdown", BLOCK_TOP_15));
+    fireEvent(dayColumn(), pointerEvent("pointerup", DROP_13));
+
+    expect(onScheduleTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7 }),
+      new Date(2026, 9, 14, 13, 0),
+      new Date(2026, 9, 14, 14, 0),
+    );
+  });
+
+  it("moves a task across days, keeping its length", () => {
+    const onScheduleTask = vi.fn();
+    renderView({ dayCount: 2, tasks: [task({ id: 7, start: at(15), end: at(16) })], onScheduleTask });
+
+    fireEvent(screen.getByTitle(/Clean the room/), pointerEvent("pointerdown", BLOCK_TOP_15));
+    fireEvent(dayColumn(1), pointerEvent("pointerup", DROP_13));
+
+    expect(onScheduleTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7 }),
+      new Date(2026, 9, 15, 13, 0),
+      new Date(2026, 9, 15, 14, 0),
+    );
+  });
+
+  it("moves a Google event without changing its length", () => {
+    const onMoveEvent = vi.fn();
+    renderView({ events: [calendarEvent()], onMoveEvent });
+
+    fireEvent(screen.getByTitle(/Standup/), pointerEvent("pointerdown", BLOCK_TOP_15));
+    fireEvent(dayColumn(), pointerEvent("pointerup", DROP_13));
+
+    expect(onMoveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "1|evt" }),
+      new Date(2026, 9, 14, 13, 0),
+      new Date(2026, 9, 14, 14, 0),
+    );
+  });
+
+  it("still toggles work when an event is merely clicked", () => {
+    const onToggleWork = vi.fn();
+    renderView({ events: [calendarEvent()], onToggleWork });
+
+    fireEvent.click(screen.getByTitle(/Standup/));
+
+    expect(onToggleWork).toHaveBeenCalledWith(expect.objectContaining({ id: "1|evt" }));
+  });
+
+  it("stretches a focus block by dragging its end edge", () => {
+    const onMoveFocus = vi.fn();
+    renderView({ focusBlocks: [focusBlock()], onMoveFocus });
+
+    fireEvent(screen.getByTitle("Drag to change the end time"), pointerEvent("pointerdown", BLOCK_TOP_15 + 56));
+    fireEvent(dayColumn(), pointerEvent("pointerup", 8 * 56));
+
+    expect(onMoveFocus).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 11 }),
+      new Date(2026, 9, 14, 15, 0),
+      new Date(2026, 9, 14, 17, 0),
+    );
+  });
+
+  it("moves an all-day event to the next day header", () => {
+    const onMoveEvent = vi.fn();
+    renderView({
+      dayCount: 2,
+      events: [calendarEvent({ id: "2|all", allDay: true, title: "Conference", start: "2026-10-14", end: "2026-10-15" })],
+      onMoveEvent,
+    });
+
+    fireEvent(screen.getByTitle(/Conference/), pointerEvent("pointerdown", 10, 20));
+    fireEvent(dayHeader(1), pointerEvent("pointerup", 10, 300));
+
+    expect(onMoveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "2|all" }),
+      new Date("2026-10-15T00:00:00Z"),
+      new Date("2026-10-16T00:00:00Z"),
+    );
   });
 });

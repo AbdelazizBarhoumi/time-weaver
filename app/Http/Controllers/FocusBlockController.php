@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\FocusBlock;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 
 class FocusBlockController extends Controller
 {
@@ -49,7 +51,28 @@ class FocusBlockController extends Controller
             'end' => 'sometimes|date',
         ]);
 
-        $block->update($data);
+        // Dragging either edge keeps the block sane: the effective start must
+        // stay before the effective end even when only one side was sent.
+        $start = isset($data['start']) ? Carbon::parse($data['start']) : $block->start;
+        $end = isset($data['end']) ? Carbon::parse($data['end']) : $block->end;
+
+        if ($end->lessThanOrEqualTo($start)) {
+            throw ValidationException::withMessages(['end' => 'The end must be after the start.']);
+        }
+
+        if (array_key_exists('title', $data)) {
+            $block->title = $data['title'];
+        }
+
+        if (array_key_exists('start', $data)) {
+            $block->start = $data['start'];
+        }
+
+        if (array_key_exists('end', $data)) {
+            $block->end = $data['end'];
+        }
+
+        $block->save();
 
         return response()->json($block->toApi());
     }
