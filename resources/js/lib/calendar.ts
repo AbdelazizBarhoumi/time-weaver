@@ -197,8 +197,6 @@ export interface CoachChatResponse {
   reply?: string;
   /** Placements the coach recommends for side tasks, if any. */
   suggestions?: CoachPlanSuggestion[];
-  /** A day the coach's snapshot did not cover; the client loads it and asks again. */
-  fetch?: { day: string } | null;
   generatedAt?: string;
   message?: string;
 }
@@ -304,8 +302,8 @@ export const calendarApi = {
     api.post<CoachPlanResponse>("/side-tasks/plan", { context }).then((r) => r.data),
   coachStatus: () => api.get<{ available: boolean }>("/calendar/coach/status").then((r) => r.data),
   coach: (facts: DayFacts) => api.post<CoachResponse>("/calendar/coach", { facts }).then((r) => r.data),
-  coachChat: (messages: CoachChatMessage[], context: CoachContext) =>
-    api.post<CoachChatResponse>("/calendar/coach/chat", { messages, context }).then((r) => r.data),
+  coachChat: (messages: CoachChatMessage[]) =>
+    api.post<CoachChatResponse>("/calendar/coach/chat", { messages }).then((r) => r.data),
 };
 
 /* ---------------------------------------------------------------- Hooks */
@@ -361,11 +359,13 @@ export function useDayCoach() {
   return useMutation({ mutationFn: (facts: DayFacts) => calendarApi.coach(facts) });
 }
 
-/** Multi-turn AI coaching. Each call replays the transcript; nothing is stored. */
+/**
+ * Multi-turn AI coaching. The transcript is sent each turn; the server runs the
+ * tool loop (and keeps its own interaction state) so no snapshot is needed.
+ */
 export function useCoachChat() {
   return useMutation({
-    mutationFn: (args: { messages: CoachChatMessage[]; context: CoachContext }) =>
-      calendarApi.coachChat(args.messages, args.context),
+    mutationFn: (args: { messages: CoachChatMessage[] }) => calendarApi.coachChat(args.messages),
   });
 }
 

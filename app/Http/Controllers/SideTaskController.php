@@ -113,7 +113,8 @@ class SideTaskController extends Controller
      *
      * Only the unscheduled ones are candidates; the answer proposes a concrete
      * local day and time for each, deferring to next week when this week's free
-     * time will not fit the remaining work.
+     * time will not fit the remaining work. Slots already behind the clock are
+     * dropped before the reply leaves the server.
      */
     public function plan(Request $request): JsonResponse
     {
@@ -159,7 +160,7 @@ class SideTaskController extends Controller
             ], 502);
         }
 
-        $parsed = $this->gemini->extractPlans($text);
+        $parsed = $this->gemini->extractPlans($text, $this->localCutoff($validated['context']));
 
         return response()->json([
             'available' => true,
@@ -167,5 +168,40 @@ class SideTaskController extends Controller
             'suggestions' => $parsed['plans'],
             'generatedAt' => now()->toIso8601String(),
         ]);
+    }
+
+    /**
+     * The user's current local wall clock ("Y-m-d H:i") that a proposed slot
+     * must sit after, so a suggestion in the past never reaches the client.
+     *
+     * The snapshot carries the instant (`now`) plus either an IANA zone or a
+     * numeric offset; the zone wins because it survives daylight-saving shifts.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function localCutoff(array $context): ?string
+    {
+        $stamp = is_string($context['now'] ?? null) ? strtotime($context['now']) : false;
+
+        if ($stamp === false) {
+            return null;
+        }
+
+        $now = Carbon::createFromTimestamp($stamp);
+
+        $timeZone = is_string($context['timeZone'] ?? null) ? trim($context['timeZone']) : '';
+        if ($timeZone !== '') {
+            try {
+                return $now->setTimezone($timeZone)->format('Y-m-d H:i');
+            } catch (Throwable) {
+                // Not a real zone — fall through to the numeric offset.
+            }
+        }
+
+        if (is_numeric($context['utcOffsetMinutes'] ?? null)) {
+            return $now->utcOffset((int) $context['utcOffsetMinutes'])->format('Y-m-d H:i');
+        }
+
+        return $now->format('Y-m-d H:i');
     }
 }

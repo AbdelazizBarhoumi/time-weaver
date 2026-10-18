@@ -271,6 +271,45 @@ describe("TodoCard", () => {
     expect(await screen.findByText("Everything is already scheduled.")).toBeInTheDocument();
   });
 
+  it("drops suggestions whose slot has already passed", async () => {
+    post.mockResolvedValue({
+      data: {
+        available: true,
+        reply: "Later today still works.",
+        // 09:00 is behind the clock (now is midday); Tuesday's slot is not.
+        suggestions: [
+          { taskId: 1, start: "2026-10-14T09:00", reason: "This morning is gone." },
+          { taskId: 1, start: "2026-10-20T17:00", reason: "Later today still works." },
+        ],
+      },
+    });
+
+    renderCard({ tasks: [task()] });
+    fireEvent.click(screen.getByRole("button", { name: /ai plan my tasks/i }));
+
+    expect(await screen.findByText("Later today still works.")).toBeInTheDocument();
+    expect(screen.queryByText("This morning is gone.")).not.toBeInTheDocument();
+    expect(screen.getByText("Past slots the coach proposed were skipped.")).toBeInTheDocument();
+  });
+
+  it("says so when every proposed slot has already passed", async () => {
+    post.mockResolvedValue({
+      data: {
+        available: true,
+        reply: "This morning is gone.",
+        suggestions: [{ taskId: 1, start: "2026-10-14T09:00", reason: "This morning is gone." }],
+      },
+    });
+
+    renderCard({ tasks: [task()] });
+    fireEvent.click(screen.getByRole("button", { name: /ai plan my tasks/i }));
+
+    expect(
+      await screen.findByText("Those slots have already passed. Run the plan again for the time still ahead."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "place" })).not.toBeInTheDocument();
+  });
+
   it("disables the plan button when the coach is unavailable", async () => {
     get.mockResolvedValue({ data: { available: false } });
 
@@ -321,19 +360,32 @@ describe("TodoCard", () => {
     expect(screen.getByText("Clean the room")).toBeInTheDocument();
   });
 
-  it("flags a suggestion whose slot has already passed", async () => {
+  it("flags a suggestion that goes stale while it sits on screen", async () => {
     post.mockResolvedValue({
       data: {
         available: true,
         reply: "That gap works.",
-        suggestions: [{ taskId: 1, start: "2026-10-14T09:00", reason: "Quiet morning" }],
+        // Ahead of the clock when the plan comes back (now is Wednesday noon)…
+        suggestions: [{ taskId: 1, start: "2026-10-14T15:00", reason: "Quiet afternoon" }],
       },
     });
 
-    renderCard({ tasks: [task()] });
+    const { rerender } = renderCard({ tasks: [task()] });
     fireEvent.click(screen.getByRole("button", { name: /ai plan my tasks/i }));
+    expect(await screen.findByText("Quiet afternoon")).toBeInTheDocument();
 
-    // now is Wednesday noon, so the 09:00 slot is behind the clock.
+    // …and behind it once the user leaves it waiting past the slot.
+    rerender(
+      <TodoCard
+        tasks={[task()]}
+        now={new Date(2026, 9, 14, 16, 0, 0, 0).getTime()}
+        coachContext={context}
+        placingId={null}
+        onTogglePlacing={noop}
+        onDelete={noop}
+      />,
+    );
+
     expect(await screen.findByText(/already passed today/i)).toBeInTheDocument();
     // It is flagged, not dropped: the user can still place it.
     expect(screen.getByRole("button", { name: "place" })).toBeEnabled();

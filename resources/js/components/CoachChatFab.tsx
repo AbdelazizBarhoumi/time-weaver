@@ -3,14 +3,11 @@ import { CalendarClock, Check, Loader2, RotateCcw, Send, Sparkles, X } from "luc
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
-  addDays,
-  startOfDay,
   useCoachChat,
   useCoachStatus,
   useUpdateSideTask,
   type CoachChatMessage,
   type CoachContext,
-  type CoachHorizonDay,
   type CoachPlanSuggestion,
 } from "@/lib/calendar";
 
@@ -21,11 +18,6 @@ const EDGE = 12;
 const DRAG_THRESHOLD = 4;
 const POSITION_KEY = "shiftgrid.coach.fab";
 const MAX_MESSAGE_CHARS = 4000;
-/** How many times one question may trigger a calendar load before we stop. */
-const MAX_FETCH_ROUNDS = 2;
-/** Never load further ahead than this, so a stray marker cannot pull a huge range. */
-const MAX_FETCH_DAYS_AHEAD = 60;
-const DAY_MS = 86_400_000;
 
 /** Quick questions offered before the first turn. */
 const SUGGESTIONS = [
@@ -81,41 +73,7 @@ function errorMessage(error: unknown): string {
   return response?.data?.message ?? "The AI coach could not be reached.";
 }
 
-/** Parse a "YYYY-MM-DD" day marker into a local midnight Date, or null if malformed. */
-function parseDayKey(day: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
-  if (!match) return null;
-
-  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-}
-
-/** The "YYYY-MM-DD" key for a local date. */
-function dayKeyOf(day: Date): string {
-  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-}
-
-/**
- * The row the coach claimed it was missing, spelled back at it. Used when it asks
- * to load a day the snapshot already holds: the answer is right there, so we hand
- * it the row instead of firing a pointless round trip that can time out.
- */
-function dayGuidance(row: CoachHorizonDay): string {
-  return (
-    `The snapshot already contains ${row.dayKey} (${row.weekday}): ` +
-    `windowStart ${row.windowStart ?? "none"}, windowEnd ${row.windowEnd ?? "none"}, ` +
-    `isRequired ${row.isRequired}, busyHours ${row.busyHours}, freeHours ${row.freeHours}, ` +
-    `dataCovered ${row.dataCovered}. Answer the user's question from this row and do not ask to load it again.`
-  );
-}
-
-export function CoachChatFab({
-  context,
-  onFetchRange,
-}: {
-  context: CoachContext;
-  /** Load a range the coach asked for; resolves once it is in the snapshot. */
-  onFetchRange?: (from: Date, to: Date) => Promise<void>;
-}) {
+export function CoachChatFab({ context }: { context: CoachContext }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<Point | null>(null);
   const [viewport, setViewport] = useState(() => ({
@@ -127,19 +85,6 @@ export function CoachChatFab({
   const [error, setError] = useState<string | null>(null);
   /** Slots the coach proposed for side tasks in its latest reply. */
   const [suggestions, setSuggestions] = useState<CoachPlanSuggestion[]>([]);
-  /**
-   * A turn waiting to be re-asked: either while a range loads, or while we hand
-   * the coach back a day the snapshot already had. `request` may carry guidance
-   * the user never sees, while `visible` is what the next reply replaces.
-   */
-  const [pendingRetry, setPendingRetry] = useState<{
-    request: CoachChatMessage[];
-    visible: CoachChatMessage[];
-    rounds: number;
-    /** The instant the loaded range must reach first; null to retry immediately. */
-    needToMs: number | null;
-  } | null>(null);
-  const [loadingRange, setLoadingRange] = useState(false);
 
   const drag = useRef<{ dx: number; dy: number; startX: number; startY: number; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
@@ -232,107 +177,31 @@ export function CoachChatFab({
     setOpen((v) => !v);
   };
 
-  /**
-   * Send one turn. When the coach says it is missing a day, either load it from
-   * the local cache or hand back the row the snapshot already holds, then ask
-   * again. The request transcript can carry that guidance unseen by the user.
-   */
-  const sendTurn = async (
-    request: CoachChatMessage[],
-    visible: CoachChatMessage[],
-    rounds: number,
-  ): Promise<void> => {
+  const sendTurn = async (transcript: CoachChatMessage[]): Promise<void> => {
     try {
-      const res = await chat.mutateAsync({ messages: request, context });
+      const res = await chat.mutateAsync({ messages: transcript });
       if (!res.reply) {
         setError(res.message ?? "The coach had nothing to say.");
         return;
       }
-
-      const shown: CoachChatMessage[] = [...visible, { role: "assistant", content: res.reply }];
-      setMessages(shown);
+      setMessages([...transcript, { role: "assistant", content: res.reply }]);
       setSuggestions(res.suggestions ?? []);
-
-      const requested = res.fetch?.day ? parseDayKey(res.fetch.day) : null;
-      if (!requested) return;
-
-      // The coach promised to load a day; keep that promise in the transcript the
-      // model sees, so the next reply reads as a continuation, not a fresh thought.
-      const asked: CoachChatMessage[] = [...request, { role: "assistant", content: res.reply }];
-
-      if (rounds >= MAX_FETCH_ROUNDS) {
-        setError("I could not load that day's schedule. Try asking again.");
-        return;
-      }
-
-      // Already in the snapshot? Then the answer is right there, so hand the row
-      // back instead of reloading, which would just repeat the same question.
-      const row = context.horizon.days.find((day) => day.dayKey === dayKeyOf(requested));
-      if (row) {
-        setPendingRetry({
-          request: [...asked, { role: "user", content: dayGuidance(row) }],
-          visible,
-          rounds: rounds + 1,
-          needToMs: null,
-        });
-        return;
-      }
-
-      // Anchor the limit to the snapshot's own clock, so the guard matches the
-      // "today" the coach reasoned about.
-      const todayMs = startOfDay(new Date(context.now)).getTime();
-      const daysAhead = Math.round((requested.getTime() - todayMs) / DAY_MS);
-      if (daysAhead < 0 || daysAhead > MAX_FETCH_DAYS_AHEAD) {
-        setError("That day is too far ahead to load.");
-        return;
-      }
-
-      setLoadingRange(true);
-      setPendingRetry({ request: asked, visible, rounds: rounds + 1, needToMs: addDays(requested, 1).getTime() });
-      onFetchRange?.(requested, addDays(requested, 1)).catch(() => {
-        setPendingRetry(null);
-        setLoadingRange(false);
-        setError("Could not load that part of your calendar.");
-      });
     } catch (err) {
       setError(errorMessage(err));
     }
   };
-  // Keep a stable handle to the latest turn runner: the retry effect must run on
-  // snapshot changes, not whenever this component re-renders.
-  const sendTurnRef = useRef(sendTurn);
-  useEffect(() => {
-    sendTurnRef.current = sendTurn;
-  });
-
-  useEffect(() => {
-    if (!pendingRetry) return;
-    // A "hand back the row" retry needs nothing loaded; a range retry waits until
-    // the snapshot's coverage actually reaches the day we asked for.
-    if (pendingRetry.needToMs !== null) {
-      if (!context.coverage) return;
-      if (Date.parse(context.coverage.to) < pendingRetry.needToMs) return;
-    }
-
-    const { request, visible, rounds } = pendingRetry;
-    setPendingRetry(null);
-    setLoadingRange(false);
-    void sendTurnRef.current(request, visible, rounds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingRetry, context.coverage]);
 
   /** A user-initiated turn: append the message and let `sendTurn` do the rest. */
   const send = (text: string) => {
     const content = text.trim();
-    if (!content || chat.isPending || loadingRange) return;
+    if (!content || chat.isPending) return;
 
     const next: CoachChatMessage[] = [...messages, { role: "user", content }];
     setMessages(next);
     setInput("");
     setError(null);
     setSuggestions([]);
-    setPendingRetry(null);
-    void sendTurn(next, next, 0);
+    void sendTurn(next);
   };
 
   const titleOf = (taskId: number) => context.tasks.find((task) => task.id === taskId)?.title ?? "Task";
@@ -399,8 +268,6 @@ export function CoachChatFab({
                   setMessages([]);
                   setError(null);
                   setSuggestions([]);
-                  setPendingRetry(null);
-                  setLoadingRange(false);
                 }}
                 disabled={messages.length === 0}
                 className="rounded p-1 text-mut hover:text-ink disabled:opacity-30"
@@ -443,12 +310,6 @@ export function CoachChatFab({
             {chat.isPending && (
               <div className="mr-auto flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs text-mut">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
-              </div>
-            )}
-
-            {loadingRange && !chat.isPending && (
-              <div className="mr-auto flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs text-mut">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading your calendar…
               </div>
             )}
 

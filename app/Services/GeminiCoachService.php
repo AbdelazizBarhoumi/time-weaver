@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\User;
 use DateTimeImmutable;
 use DateTimeZone;
 use Illuminate\Http\Client\ConnectionException;
@@ -9,6 +10,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
@@ -71,13 +73,8 @@ class GeminiCoachService
      */
     private const PLAN_MARKER = '/\[\[\s*PLAN\s*:\s*(\d+)\s*\|\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?\s*\]\]/i';
 
-    /**
-     * The line suffix the coach uses when it needs a day its snapshot did not
-     * cover: `[[FETCH:2026-10-27]]`. The server strips these out and returns the
-     * day, so the client can load that range and ask again instead of the coach
-     * guessing about a day it was never given.
-     */
-    private const FETCH_MARKER = '/\[\[\s*FETCH\s*:\s*(\d{4}-\d{2}-\d{2})\s*\]\]/i';
+    /** Max tool execution rounds in the agent loop. */
+    private const MAX_TOOL_ROUNDS = 6;
 
     /**
      * Whether an API key has been configured for Gemini.
@@ -106,27 +103,149 @@ class GeminiCoachService
     }
 
     /**
-     * Continue (or start) a multi-turn coaching conversation.
+     * Tool-driven chat loop using Gemini Interactions API.
      *
-     * The API is used statelessly: `store` is false and the whole transcript is
-     * replayed on every turn. Rather than echoing the model's opaque steps back
-     * (which would drag provider-specific signatures through the client), the
-     * transcript is rendered as plain text, which keeps each turn independent.
-     *
-     * @param  array<int, array{role: string, content: string}>  $messages  Oldest first; ends with the new user turn.
-     * @param  array<string, mixed>  $context  A fresh snapshot of the user's day/week/month data.
-     *
-     * @throws RuntimeException when the service is not configured, the request fails, or the reply is unusable.
+     * @param  array<int, array{role: string, content: string}>  $messages
      */
-    public function chat(array $messages, array $context): string
+    public function chatWithTools(User $user, array $messages, int $maxRounds = self::MAX_TOOL_ROUNDS): string
     {
         if (! $this->isConfigured()) {
             throw new RuntimeException('Gemini is not configured.');
         }
 
-        $response = $this->send($this->chatPayload($messages, $context));
+        $registry = app(CoachToolRegistry::class);
+        $tools = $registry->declarations();
 
-        return $this->extractText($response);
+        $history = $this->normalizeMessages($messages);
+        $previousId = null;
+        $round = 0;
+
+        while ($round < $maxRounds) {
+            $payload = [
+                'model' => $this->model(),
+                'system_instruction' => $this->toolsSystemPrompt(),
+                'tools' => $tools,
+                'generation_config' => $this->generationConfig(),
+                'store' => (bool) config('services.gemini.store', true),
+            ];
+            if ($previousId) {
+                $payload['previous_interaction_id'] = $previousId;
+            }
+            // The full transcript goes out every round: the API wants each
+            // function_result right behind the call turn it answers, so the
+            // replayed history keeps the pairing intact under chaining.
+            $payload['input'] = $this->renderHistory($history);
+
+            $response = $this->send($payload);
+            $body = $response->json();
+            if (! is_array($body)) {
+                throw new RuntimeException('Gemini returned an unreadable response.');
+            }
+
+            $status = data_get($body, 'status');
+            if (is_string($status) && in_array($status, self::DEAD_STATUSES, true)) {
+                throw new RuntimeException('Gemini '.$status.' the interaction: '.$this->errorMessage($body));
+            }
+
+            $steps = is_array(data_get($body, 'steps')) ? data_get($body, 'steps') : [];
+
+            if ($status === 'requires_action') {
+                $toolCalls = array_values(array_filter($steps, fn ($s) => is_array($s) && ($s['type'] ?? null) === 'function_call'));
+                if ($toolCalls === []) {
+                    throw new RuntimeException('Gemini asked for a tool call but none were found.');
+                }
+
+                $toolResults = [];
+                foreach ($toolCalls as $call) {
+                    $name = $call['name'] ?? null;
+                    $args = is_array($call['arguments'] ?? null) ? $call['arguments'] : [];
+                    $callId = $call['id'] ?? null;
+                    try {
+                        $result = $registry->execute($user, (string) $name, $args);
+                    } catch (InvalidArgumentException $e) {
+                        $result = ['error' => $e->getMessage()];
+                    }
+                    $toolResults[] = [
+                        'type' => 'function_result',
+                        'name' => $name,
+                        'call_id' => $callId,
+                        'result' => [['type' => 'text', 'text' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)]],
+                    ];
+                }
+
+                $previousId = $body['id'] ?? null;
+                $round++;
+                $history = array_merge($history, $toolResults);
+
+                continue;
+            }
+
+            if ($status === self::INCOMPLETE_STATUS) {
+                Log::warning('Gemini interaction was incomplete (reply truncated)', [
+                    'reason' => $this->errorMessage($body),
+                    'usage' => $this->usageSummary($body),
+                ]);
+            }
+
+            $text = $this->collectModelOutput($body);
+            if ($text === null || trim($text) === '') {
+                throw new RuntimeException('Gemini returned an empty response');
+            }
+
+            return trim($text);
+        }
+
+        throw new RuntimeException('Gemini tool loop exceeded max rounds.');
+    }
+
+    /**
+     * @param  array<int, array{role: string, content: string}>  $messages
+     * @return array<int, array<string, mixed>>
+     */
+    private function normalizeMessages(array $messages): array
+    {
+        $normalized = [];
+        foreach ($messages as $m) {
+            $role = $m['role'] ?? 'user';
+            $content = trim((string) ($m['content'] ?? ''));
+            if ($content === '') {
+                continue;
+            }
+            $normalized[] = ['role' => $role, 'content' => $content];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Render the in-flight transcript as the `input` steps of an interaction.
+     *
+     * The Interactions API rejects `model_output` steps inside a submitted
+     * `input` with a 400 ("Request contains an invalid argument"), so every
+     * turn — including the coach's own earlier replies — goes out as a plain
+     * `text` step, with a role prefix so the model can still tell the turns
+     * apart. Only `text` and `function_result` steps may appear here.
+     *
+     * @param  array<int, array<string, mixed>>  $history
+     */
+    private function renderHistory(array $history): array
+    {
+        $input = [];
+        foreach ($history as $item) {
+            if (isset($item['type']) && $item['type'] === 'function_result') {
+                $input[] = $item;
+
+                continue;
+            }
+
+            $prefix = ($item['role'] ?? 'user') === 'assistant' ? 'Coach: ' : 'User: ';
+            $input[] = [
+                'type' => 'text',
+                'text' => $prefix.$item['content'],
+            ];
+        }
+
+        return $input;
     }
 
     /**
@@ -160,9 +279,15 @@ class GeminiCoachService
      * suggestion, and that marker is removed from the line so the user never
      * sees the raw syntax. The reason is whatever text shared the line.
      *
+     * A slot the model placed in the past is dropped whole — line included — so
+     * the reply never advertises a time that is already behind the clock. The
+     * model is told not to do it, but a free morning in the snapshot still
+     * tempts it, so the cutoff is enforced here as well.
+     *
+     * @param  string|null  $notBefore  Local wall clock ("Y-m-d H:i") before which a slot is rejected.
      * @return array{text: string, plans: array<int, array{taskId: int, start: string, reason: string}>}
      */
-    public function extractPlans(string $text): array
+    public function extractPlans(string $text, ?string $notBefore = null): array
     {
         $plans = [];
         $kept = [];
@@ -171,6 +296,12 @@ class GeminiCoachService
             if (preg_match(self::PLAN_MARKER, $line, $matches) !== 1) {
                 $kept[] = $line;
 
+                continue;
+            }
+
+            // Both sides are zero-padded "Y-m-d H:i", so the ordering is lexicographic.
+            $slot = "{$matches[2]} {$matches[3]}";
+            if ($notBefore !== null && $slot < $notBefore) {
                 continue;
             }
 
@@ -195,45 +326,6 @@ class GeminiCoachService
     }
 
     /**
-     * Split a coach reply into the text the user should see and the days whose
-     * calendar data the coach asked for. A `[[FETCH:YYYY-MM-DD]]` marker means the
-     * day was not in the snapshot; the client loads that range and re-asks, so the
-     * coach never has to guess about a day it was not given.
-     *
-     * @return array{text: string, fetches: array<int, array{day: string}>}
-     */
-    public function extractFetches(string $text): array
-    {
-        $fetches = [];
-        $kept = [];
-
-        foreach (preg_split('/\R/', $text) ?: [] as $line) {
-            $count = preg_match_all(self::FETCH_MARKER, $line, $matches);
-
-            if ($count === false || $count === 0) {
-                $kept[] = $line;
-
-                continue;
-            }
-
-            foreach ($matches[1] as $day) {
-                $fetches[] = ['day' => $day];
-            }
-
-            $reason = trim((string) preg_replace('/\s+/', ' ', (string) preg_replace(self::FETCH_MARKER, '', $line)));
-
-            if ($reason !== '') {
-                $kept[] = $reason;
-            }
-        }
-
-        return [
-            'text' => trim(implode("\n", $kept)),
-            'fetches' => $fetches,
-        ];
-    }
-
-    /**
      * The request body: model, system instruction, user input and sampling
      * controls.
      *
@@ -246,26 +338,6 @@ class GeminiCoachService
             'model' => $this->model(),
             'system_instruction' => $this->systemPrompt(),
             'input' => $this->userPrompt($facts),
-            'generation_config' => $this->generationConfig(),
-            'store' => (bool) config('services.gemini.store', false),
-        ];
-    }
-
-    /**
-     * The request body for a chat turn: the same model and sampling controls,
-     * but the system instruction carries a data snapshot and the input is the
-     * replayed transcript.
-     *
-     * @param  array<int, array{role: string, content: string}>  $messages
-     * @param  array<string, mixed>  $context
-     * @return array<string, mixed>
-     */
-    private function chatPayload(array $messages, array $context): array
-    {
-        return [
-            'model' => $this->model(),
-            'system_instruction' => $this->chatSystemPrompt($context),
-            'input' => $this->chatUserPrompt($messages),
             'generation_config' => $this->generationConfig(),
             'store' => (bool) config('services.gemini.store', false),
         ];
@@ -319,6 +391,61 @@ class GeminiCoachService
             'thinking_level' => $this->optionalString(config('services.gemini.thinking_level')),
             'seed' => $this->optionalInt(config('services.gemini.seed')),
         ], fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    /**
+     * Persona, grounding rules and tool guidance for the tool-driven chat.
+     *
+     * The domain rules mirror the snapshot prompt: arithmetic over tool data,
+     * workable time vs free time, study never counting as work, the backlog /
+     * pace checks before green-lighting a free day, and the [[PLAN]] marker.
+     */
+    private function toolsSystemPrompt(): string
+    {
+        return implode("\n", [
+            'You are the AI coach inside a work-hours tracker called ShiftGrid.',
+            'The user asks about their own schedule, workload and pace, and you guide them.',
+            'You answer by deciding which tools to call: fetch only what the question needs, never guess.',
+            'Use get_current_datetime first to anchor "now" (timezone, weekday, local date/time).',
+            'Use get_calendar_events for a specific window (after 24h, next week, through an exam date).',
+            'Use get_goals_and_tasks for workload, pace, backlog, settings and side tasks.',
+            'Use get_free_slots when you need concrete gaps to place a task.',
+            'Never invent events, meetings, hours or numbers; only use data returned by tools.',
+            'Never answer "I cannot tell" when the tool data supports a subtraction or division.',
+            'Do the arithmetic yourself: free = window minus busy, still owed today = remaining goal,',
+            'week left = target minus done, per day = remaining divided by days left.',
+            'freeMs is only unbooked gaps; workableMs is the time left to work, because focus blocks and work',
+            'events are work and do not reduce it. Compare goals and backlogs against workable, never free.',
+            'The working window and required weekdays are settings (workStart, workEnd, workDays, requiredDays),',
+            'returned by get_goals_and_tasks and get_current_datetime. Never ask the user to tell you their',
+            'working window or working days — call a tool and read them.',
+            'Treat requiredDays as the days the user must work; any other weekday is optional, not owed.',
+            'Before confirming a day is free, or that resting or playing is fine, check the whole picture:',
+            'the remaining week and month targets, the month pace so far, the cumulative backlog, and the side',
+            'tasks (unplaced ones and any already placed on that day).',
+            'A weekday that is not required is not owed, but it is not automatically free either: if the backlog',
+            'is above zero, tasks are still unplaced, or the month pace is behind, do not answer with a bare yes —',
+            'answer the question first, then name the backlog hours, the unplaced task hours and the time still',
+            'needed per day.',
+            'A non-required day that already has blocking tasks placed on it is not free time; say so.',
+            'Study sessions are fixed commitments: study time blocks the day like a meeting but is never work.',
+            'Never count study toward work hours or goal progress, and never add study and busy hours together.',
+            'Every timestamp returned by tools is UTC (it ends with Z). Convert each time into the user\'s local',
+            'clock and never quote a raw ISO timestamp back to the user.',
+            'Never propose a day earlier than today, and never propose a time that has already passed.',
+            'A slot later on today is still today: say "later today", never name a future weekday for it.',
+            'Side tasks are the user\'s personal to-dos, listed by get_goals_and_tasks with an estimate in minutes.',
+            'A task is unplaced when its start is null and it is not done — only those can be given a slot.',
+            'Tasks marked blocksWork occupy the user\'s time; the others are flexible.',
+            'When the user asks where or when to do a task, recommend one concrete local day and time, only',
+            'where the gap is at least the task estimate and does not overlap a meeting or another task,',
+            'and end that recommendation with [[PLAN:<task id>|<YYYY-MM-DD HH:MM>]] using the user\'s local clock.',
+            'Never add a marker when the user did not ask where to put a task, and only use real task ids.',
+            'Answer the user\'s actual question first, then add at most one short, concrete suggestion.',
+            'Be concise: 1 to 4 short sentences, or a few short lines.',
+            'Plain text only — no markdown, no headings, no bullet characters, no asterisks.',
+            'Keep the thread coherent: you can refer back to earlier turns in the conversation.',
+        ]);
     }
 
     /**
@@ -580,88 +707,6 @@ class GeminiCoachService
     }
 
     /**
-     * Persona + grounding rules + the data snapshot the chat can answer from.
-     *
-     * @param  array<string, mixed>  $context
-     */
-    private function chatSystemPrompt(array $context): string
-    {
-        $json = json_encode($context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-        $timeZone = is_string($context['timeZone'] ?? null) && $context['timeZone'] !== ''
-            ? $context['timeZone']
-            : 'unknown';
-        $offsetMinutes = $context['utcOffsetMinutes'] ?? null;
-
-        return implode("\n", [
-            'You are the AI coach inside a work-hours tracker called ShiftGrid.',
-            'The user asks you questions about their own schedule, workload and pace, and you guide them.',
-            'The snapshot below is the single source of truth. Use only the data in it.',
-            'Never invent events, meetings, hours or numbers, and never contradict the snapshot.',
-            'Do the arithmetic yourself wherever the snapshot supports it: free = window minus busy,',
-            'freeMs is only the unbooked gaps; today.workableMs is the time left to work, because focus blocks',
-            'and work events are work and do not reduce it. Compare goals and backlogs against workableMs, never freeMs.',
-            'still owed today = remaining goal, week left = target minus done, per day = remaining divided by days left.',
-            'Never answer "I cannot tell" when a subtraction or division over the snapshot answers the question.',
-            'The working window and the required weekdays are settings, not calendar data: read workStart, workEnd,',
-            'workDays and requiredDays from the "settings" block. Never ask the user to tell you their working window',
-            'or working days — they are already in the snapshot.',
-            'The "horizon" block lists the next 14 days starting today, each with its window (windowStart/windowEnd),',
-            'isRequired, busyHours and freeHours. Answer questions about tomorrow or any later day from those rows,',
-            'even when that day has no events, and pick slots from the horizon and week.days rather than inventing them.',
-            'A day with dataCovered: true has its events loaded. If dataCovered is false, do not call it free and do not',
-            'quote free hours for it, and never ask the user to supply that day\'s schedule yourself.',
-            'Every day in the horizon already has its window and required flag, so questions like "when must I work',
-            'tomorrow" or "how long do I work next Monday" are answered straight from the horizon row, never by loading.',
-            'Only when the user names a date that is NOT in the horizon at all, say you are loading it and end that line',
-            'with the marker [[FETCH:YYYY-MM-DD]] using that date. The app loads it and asks again with the day added.',
-            'Never reply with nothing but "loading": if the horizon or settings already answer the question, answer it.',
-            'Treat the requiredDays list as the days the user must work; any other weekday is optional, not owed.',
-            'Before confirming a day is free, or that resting or playing is fine, check the whole picture:',
-            'week.remainingHours, month.remainingHours and the month pace so far (daysLeft, perDayNeeded,',
-            'paceDeltaHours), the cumulative backlogHours, and the side',
-            'tasks (tasksSummary.unplaced, unplacedEstimateHours, and any task in the tasks array already placed on that day).',
-            'A weekday that is not required is not owed, but it is not automatically free either: if backlogHours is',
-            'above zero, tasks are still unplaced, or the month pace is behind, do not answer with a bare yes — answer',
-            'the question first, then name the backlog hours, the unplaced task hours and the time still needed per day.',
-            'A non-required day that already has blocking tasks placed on it is not free time; say so.',
-            'If the snapshot genuinely lacks something the blocks above do not cover, say so plainly and ask for what you need.',
-            'Answer the user\'s actual question first, then add at most one short, concrete suggestion.',
-            'Be concise: 1 to 4 short sentences, or a few short lines.',
-            'Plain text only — no markdown, no headings, no bullet characters, no asterisks.',
-            'Quote concrete times and durations from the snapshot when they help.',
-            'Keep the thread coherent: you can refer back to earlier turns in the conversation.',
-            sprintf(
-                'Every timestamp is ISO-8601 in UTC (it ends with Z). The user is in %s (%s), so convert',
-                $timeZone,
-                $this->formatUtcOffset($offsetMinutes),
-            ),
-            'each time into that local clock and never quote a raw ISO timestamp back to the user.',
-            $this->localNowLine($context),
-            'Never propose a day earlier than today, and never propose a time that has already passed.',
-            'A slot later on today is still today: say "later today", never name a future weekday for it.',
-            'Side tasks are the user\'s personal to-dos; they are listed in the "tasks" array with an estimate in minutes.',
-            'A task is unplaced when its start is null and it is not done — only those can be given a slot.',
-            'Tasks marked "blocksWork": true occupy the user\'s time; the others are flexible and can be moved or skipped.',
-            'When the user asks where or when to do a task, recommend one concrete local day and time for it.',
-            'Pick slots from the horizon and week.days lists: they give each day with its window, busy hours and free hours.',
-            'Only propose a day whose freeHours is at least the task\'s estimate in minutes divided by 60.',
-            'Prefer a free gap on a required weekday in the current week while the remaining work still fits;',
-            'if the remaining work for the week will not fit in the free time left, say so plainly and place it next week instead.',
-            'A gap works only if it is at least as long as the task\'s estimate, and it must not overlap a meeting or another task.',
-            'End such a recommendation with the marker [[PLAN:<task id>|<YYYY-MM-DD HH:MM>]], using the user\'s local clock.',
-            'Never add a marker when the user did not ask where to put a task, and only use ids from the tasks array.',
-            'Study sessions live in the "study" block and as studySessions inside "today"; they are fixed commitments.',
-            'Study time blocks the day like a meeting but is never work: never count it toward work hours or goal progress.',
-            'Today\'s busyMs already includes study time; use studyMs only to say how much of it is study, never add them together.',
-            'When the user asks about studying, answer from the study block: todayHours, remainingTodayHours, weekHours and the named sessions.',
-            '',
-            'Current snapshot:',
-            $json === false ? '{"error":"context could not be encoded"}' : $json,
-        ]);
-    }
-
-    /**
      * Persona + grounding rules + the data snapshot for a batch placement turn.
      *
      * @param  array<string, mixed>  $context
@@ -692,6 +737,8 @@ class GeminiCoachService
             'each time into that local clock and never quote a raw ISO timestamp back to the user.',
             $this->localNowLine($context),
             'Never propose a day earlier than today, and never propose a time that has already passed.',
+            'Slots before the current local time are invalid even when the snapshot shows free time there: earlier today is gone.',
+            'week.days and horizon rows for days before today are history — ignore their window and hours entirely.',
             'A slot later on today is still today: say "later today", never name a future weekday for it.',
             'Pick slots from the horizon and week.days lists below: each gives a day with its window, busy hours and free hours.',
             'Only use a day whose dataCovered is true, so you never place a task into a day whose calendar was not loaded.',
@@ -775,31 +822,5 @@ class GeminiCoachService
         $absolute = abs($minutes);
 
         return sprintf('%s%02d:%02d', $sign, intdiv($absolute, 60), $absolute % 60);
-    }
-
-    /**
-     * Render the replayed transcript as plain text, ending with the turn to answer.
-     *
-     * @param  array<int, array{role: string, content: string}>  $messages
-     */
-    private function chatUserPrompt(array $messages): string
-    {
-        $lines = ['Conversation so far (oldest first):'];
-
-        foreach ($messages as $message) {
-            $content = trim((string) ($message['content'] ?? ''));
-
-            if ($content === '') {
-                continue;
-            }
-
-            $role = ($message['role'] ?? '') === 'assistant' ? 'Coach' : 'User';
-            $lines[] = "{$role}: {$content}";
-        }
-
-        $lines[] = '';
-        $lines[] = 'Reply to the last User message now, as the Coach.';
-
-        return implode("\n", $lines);
     }
 }

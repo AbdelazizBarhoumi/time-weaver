@@ -159,12 +159,21 @@ export function TodoCard({
     setPlanNote(null);
     plan.mutate(coachContext, {
       onSuccess: (res) => {
-        const found = res.suggestions ?? [];
+        // The server drops past slots too; this catches any that went stale
+        // between the snapshot and the reply (clock skew, an ageing tab).
+        const returned = res.suggestions ?? [];
+        const found = returned.filter((suggestion) => !isStaleSuggestion(suggestion.start, now));
         setSuggestions(found);
         if (res.message) {
           setPlanNote(res.message);
         } else if (found.length === 0) {
-          setPlanNote(res.reply ?? "Nothing to place right now.");
+          setPlanNote(
+            returned.length > 0
+              ? "Those slots have already passed. Run the plan again for the time still ahead."
+              : (res.reply ?? "Nothing to place right now."),
+          );
+        } else if (found.length < returned.length) {
+          setPlanNote("Past slots the coach proposed were skipped.");
         }
       },
       onError: () => setPlanNote("The AI coach could not be reached. Try again in a moment."),

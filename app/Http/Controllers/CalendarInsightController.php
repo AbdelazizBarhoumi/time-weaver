@@ -104,10 +104,11 @@ class CalendarInsightController extends Controller
     /**
      * Continue a multi-turn coaching conversation.
      *
-     * This is deliberately stateless: the client replays the whole transcript
-     * and the current data snapshot on every turn, and we forward both to
-     * Gemini with `store: false`. Nothing is persisted, and because each turn
-     * is unique there is no caching here (unlike the one-shot read-out).
+     * The client sends only the transcript. The service runs a tool loop
+     * against the user's own data (calendar, goals, free slots) and keeps the
+     * interaction stateful, so nothing needs to be snapshotted client-side.
+     * There is no caching here (unlike the one-shot read-out): each turn asks
+     * fresh questions of the live data.
      */
     public function chat(Request $request): JsonResponse
     {
@@ -122,7 +123,6 @@ class CalendarInsightController extends Controller
             'messages' => ['required', 'array', 'min:1', 'max:'.self::MAX_MESSAGES],
             'messages.*.role' => ['required', Rule::in(['user', 'assistant'])],
             'messages.*.content' => ['required', 'string', 'max:'.self::MAX_MESSAGE_CHARS],
-            'context' => ['required', 'array'],
         ]);
 
         /** @var array<int, array{role: string, content: string}> $messages */
@@ -136,7 +136,7 @@ class CalendarInsightController extends Controller
         }
 
         try {
-            $reply = $this->gemini->chat($messages, $validated['context']);
+            $reply = $this->gemini->chatWithTools($request->user(), $messages);
         } catch (Throwable $e) {
             Log::warning('Gemini coach chat failed', ['message' => $e->getMessage()]);
 
@@ -146,20 +146,12 @@ class CalendarInsightController extends Controller
             ], 502);
         }
 
-        // A recommendation to place a side task hides itself in a [[PLAN:…]] marker.
-        // Pull those out so the client can offer a one-click "Place" instead of
-        // showing the raw syntax.
         $parsed = $this->gemini->extractPlans($reply);
-
-        // A day the snapshot did not cover hides itself in a [[FETCH:…]] marker.
-        // Pull it out too, so the client can load that range and ask again.
-        $needs = $this->gemini->extractFetches($parsed['text']);
 
         return response()->json([
             'available' => true,
-            'reply' => $needs['text'],
+            'reply' => $parsed['text'],
             'suggestions' => $parsed['plans'],
-            'fetch' => $needs['fetches'][0] ?? null,
             'generatedAt' => now()->toIso8601String(),
         ]);
     }

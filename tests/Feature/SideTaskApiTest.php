@@ -385,6 +385,50 @@ class SideTaskApiTest extends TestCase
         });
     }
 
+    public function test_plan_drops_suggestions_whose_slot_has_already_passed(): void
+    {
+        $todo = SideTask::factory()->for($this->user)->create(['title' => 'Clean the room']);
+
+        $this->fakeReply(
+            'This morning is gone. [[PLAN:'.$todo->id.'|2026-10-14 09:00]]'.PHP_EOL
+            .'Yesterday had space. [[PLAN:'.$todo->id.'|2026-10-13 10:00]]'.PHP_EOL
+            .'Later today still works. [[PLAN:'.$todo->id.'|2026-10-14 16:00]]',
+        );
+
+        // 12:00 UTC is 14:00 in Berlin, so only the 16:00 slot is still ahead.
+        $this->postJson('/api/side-tasks/plan', [
+            'context' => [
+                'now' => '2026-10-14T12:00:00.000Z',
+                'timeZone' => 'Europe/Berlin',
+                'utcOffsetMinutes' => 120,
+            ],
+        ])
+            ->assertStatus(200)
+            ->assertJsonPath('suggestions', [
+                [
+                    'taskId' => $todo->id,
+                    'start' => '2026-10-14T16:00',
+                    'reason' => 'Later today still works.',
+                ],
+            ])
+            // The dead slots never reach the user, neither as a suggestion nor in the prose.
+            ->assertJsonPath('reply', 'Later today still works.');
+    }
+
+    public function test_plan_returns_no_suggestions_when_every_slot_is_in_the_past(): void
+    {
+        SideTask::factory()->for($this->user)->create(['title' => 'Clean the room']);
+
+        $this->fakeReply('Morning works. [[PLAN:1|2026-10-14 09:00]]');
+
+        $this->postJson('/api/side-tasks/plan', [
+            'context' => ['now' => '2026-10-14T12:00:00.000Z', 'timeZone' => 'Europe/Berlin'],
+        ])
+            ->assertStatus(200)
+            ->assertJsonPath('suggestions', [])
+            ->assertJsonPath('reply', '');
+    }
+
     public function test_plan_carries_the_week_day_breakdown_to_the_model(): void
     {
         SideTask::factory()->for($this->user)->create(['title' => 'Clean the room']);

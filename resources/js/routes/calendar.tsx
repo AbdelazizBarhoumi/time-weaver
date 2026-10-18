@@ -1,6 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,8 +16,6 @@ import {
   blockingTaskIntervals,
   buildCoachContext,
   COACH_HORIZON_DAYS,
-  calendarApi,
-  calendarEventsKey,
   computeDayBudget,
   computeDayInsights,
   computeWorkableTimeLeft,
@@ -118,8 +115,6 @@ function CalendarPage() {
   /** The side task armed for click-to-place, if any. */
   const [placingId, setPlacingId] = useState<number | null>(null);
   const [syncErrors, setSyncErrors] = useState<{ accountId: number; email: string; message: string }[]>([]);
-  /** A range the coach asked to load beyond its base two-week horizon. */
-  const [extraCoachRange, setExtraCoachRange] = useState<{ from: Date; to: Date } | null>(null);
 
   useEffect(() => {
     try {
@@ -144,18 +139,14 @@ function CalendarPage() {
   const accounts = useCalendarAccounts();
   const settingsQ = useCalendarSettings();
   const eventsQ = useCalendarEvents(rangeFrom, rangeTo);
-  // The coach reasons over a rolling two-week horizon, even when the grid shows a
-  // single day or another month, so "tomorrow" is never a blank. When it asks for a
-  // day beyond that horizon, `extraCoachRange` widens the loaded range on demand.
+  // The coach context (task titles, study roll-ups for the sidebar cards) reasons
+  // over a rolling two-week horizon, even when the grid shows a single day or
+  // another month, so "tomorrow" is never a blank.
   const coachHorizonStart = startOfDay(new Date(now));
   const coachBaseTo = addDays(coachHorizonStart, COACH_HORIZON_DAYS);
-  const coachRangeFrom =
-    extraCoachRange && extraCoachRange.from.getTime() < coachHorizonStart.getTime() ? extraCoachRange.from : coachHorizonStart;
-  const coachRangeTo =
-    extraCoachRange && extraCoachRange.to.getTime() > coachBaseTo.getTime() ? extraCoachRange.to : coachBaseTo;
-  const coachRangeFromKey = coachRangeFrom.toISOString();
-  const coachRangeToKey = coachRangeTo.toISOString();
-  const coachQ = useCalendarEvents(coachRangeFrom, coachRangeTo);
+  const coachRangeFromKey = coachHorizonStart.toISOString();
+  const coachRangeToKey = coachBaseTo.toISOString();
+  const coachQ = useCalendarEvents(coachHorizonStart, coachBaseTo);
   const focusQ = useFocusBlocks(rangeFrom, rangeTo);
   const tasksQ = useSideTasks();
   const sessionsQ = useSessions({ from: rangeFrom.toISOString(), to: rangeTo.toISOString(), per_page: 500 });
@@ -173,7 +164,6 @@ function CalendarPage() {
   const deleteSession = useDeleteSession();
   const confirm = useConfirm();
   const prompt = usePrompt();
-  const queryClient = useQueryClient();
   const syncCalendars = useSyncCalendars();
   const purgeEvents = usePurgeAccountEvents();
   const restoreEvents = useRestoreAccountEvents();
@@ -331,28 +321,6 @@ function CalendarPage() {
       coachRangeFromKey,
       coachRangeToKey,
     ],
-  );
-
-  /**
-   * Load a range the coach asked for, straight from the calendar cache. The
-   * snapshot is rebuilt once the query resolves, and the chat then retries.
-   */
-  const loadCoachRange = useCallback(
-    async (from: Date, to: Date) => {
-      const loadedFrom = new Date(coachRangeFromKey);
-      const loadedTo = new Date(coachRangeToKey);
-      const dayFrom = startOfDay(from);
-      const dayTo = addDays(startOfDay(to), 1);
-      const wideFrom = dayFrom.getTime() < loadedFrom.getTime() ? dayFrom : loadedFrom;
-      const wideTo = dayTo.getTime() > loadedTo.getTime() ? dayTo : loadedTo;
-
-      setExtraCoachRange({ from: wideFrom, to: wideTo });
-      await queryClient.fetchQuery({
-        queryKey: calendarEventsKey(wideFrom.toISOString(), wideTo.toISOString()),
-        queryFn: () => calendarApi.events(wideFrom.toISOString(), wideTo.toISOString()),
-      });
-    },
-    [queryClient, coachRangeFromKey, coachRangeToKey],
   );
 
   // Placement only exists on the day/week grid, so leaving it disarms the task.
@@ -800,7 +768,7 @@ function CalendarPage() {
         </aside>
       </main>
 
-      <CoachChatFab context={coachContext} onFetchRange={loadCoachRange} />
+      <CoachChatFab context={coachContext} />
     </div>
   );
 

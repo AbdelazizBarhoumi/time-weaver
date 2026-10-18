@@ -70,7 +70,7 @@ return [
         'max_output_tokens' => env('GEMINI_MAX_OUTPUT_TOKENS', 4096),
         'thinking_level' => env('GEMINI_THINKING_LEVEL', 'low'),
         'seed' => env('GEMINI_SEED'),
-        'store' => env('GEMINI_STORE', false),
+        'store' => env('GEMINI_STORE', true),
         'timeout' => env('GEMINI_TIMEOUT', 60),
         'connect_timeout' => env('GEMINI_CONNECT_TIMEOUT', 10),
         'retries' => env('GEMINI_RETRIES', 2),

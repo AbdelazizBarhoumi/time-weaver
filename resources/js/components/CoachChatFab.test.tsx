@@ -98,30 +98,6 @@ const contextWithTask: CoachContext = {
   },
 };
 
-/** The same snapshot, but with tomorrow already present in the horizon. */
-const contextWithHorizon: CoachContext = {
-  ...context,
-  horizon: {
-    from: "2026-10-14T00:00:00.000Z",
-    to: "2026-10-28T00:00:00.000Z",
-    days: [
-      {
-        dayKey: "2026-10-15",
-        weekday: "Thursday",
-        isToday: false,
-        isWorkDay: true,
-        isRequired: true,
-        windowStart: "09:00",
-        windowEnd: "17:00",
-        busyHours: 0,
-        freeHours: 8,
-        isPast: false,
-        dataCovered: true,
-      },
-    ],
-  },
-};
-
 function fab(): HTMLElement {
   return screen.getByRole("button", { name: /AI coach/i });
 }
@@ -162,9 +138,11 @@ describe("CoachChatFab", () => {
         messages: [
           { role: "user", content: "How much free time do I have today?" },
         ],
-        context,
       }),
     );
+    // The client no longer ships a data snapshot; the server fetches via tools.
+    const body = post.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty("context");
   });
 
   it("submits typed text with Enter and keeps shift+Enter for new lines", async () => {
@@ -245,75 +223,17 @@ describe("CoachChatFab", () => {
     );
   });
 
-  it("loads a day the coach asks for and asks the question again", async () => {
-    post
-      .mockResolvedValueOnce({ data: { available: true, reply: "Loading that day.", fetch: { day: "2026-10-20" } } })
-      .mockResolvedValueOnce({ data: { available: true, reply: "You have 3 hours on Tuesday." } });
-    const onFetchRange = vi.fn().mockResolvedValue(undefined);
+  it("sends exactly one request per turn with no retry loop", async () => {
+    // The tool-driven coach fetches server-side, so the client never re-asks.
+    post.mockResolvedValueOnce({
+      data: { available: true, reply: "You have 3 hours on Tuesday." },
+    });
 
-    render(<CoachChatFab context={context} onFetchRange={onFetchRange} />);
+    render(<CoachChatFab context={context} />);
     fireEvent.click(fab());
     fireEvent.click(await screen.findByRole("button", { name: "How much free time do I have today?" }));
 
-    // The coach's second answer replaces the "loading" placeholder.
     expect(await screen.findByText("You have 3 hours on Tuesday.")).toBeInTheDocument();
-    expect(screen.queryByText("Loading that day.")).not.toBeInTheDocument();
-
-    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
-    expect(onFetchRange).toHaveBeenCalledTimes(1);
-    const [from, to] = onFetchRange.mock.calls[0] as [Date, Date];
-    expect(from.getDate()).toBe(20);
-    expect(to.getDate()).toBe(21);
-  });
-
-  it("stops re-asking after the fetch round cap", async () => {
-    // Every reply keeps asking for the same missing day.
-    post.mockResolvedValue({ data: { available: true, reply: "Still loading.", fetch: { day: "2026-10-20" } } });
-    const onFetchRange = vi.fn().mockResolvedValue(undefined);
-
-    render(<CoachChatFab context={context} onFetchRange={onFetchRange} />);
-    fireEvent.click(fab());
-    fireEvent.click(await screen.findByRole("button", { name: "How much free time do I have today?" }));
-
-    await waitFor(() => expect(onFetchRange).toHaveBeenCalledTimes(2));
-    // One original turn plus two fetches; the cap stops it there.
-    await waitFor(() => expect(post).toHaveBeenCalledTimes(3));
-    expect(post).toHaveBeenCalledTimes(3);
-  });
-
-  it("ignores a fetch request for a day past the load limit", async () => {
-    // 2026-12-31 is more than the sixty-day cap away from the snapshot's today.
-    post.mockResolvedValueOnce({ data: { available: true, reply: "That is far away.", fetch: { day: "2026-12-31" } } });
-    const onFetchRange = vi.fn().mockResolvedValue(undefined);
-
-    render(<CoachChatFab context={context} onFetchRange={onFetchRange} />);
-    fireEvent.click(fab());
-    fireEvent.click(await screen.findByRole("button", { name: "How much free time do I have today?" }));
-
-    expect(await screen.findByText("That is far away.")).toBeInTheDocument();
-    expect(onFetchRange).not.toHaveBeenCalled();
     expect(post).toHaveBeenCalledTimes(1);
-  });
-
-  it("answers from the horizon instead of reloading a day it already has", async () => {
-    post
-      .mockResolvedValueOnce({ data: { available: true, reply: "Loading that day.", fetch: { day: "2026-10-15" } } })
-      .mockResolvedValueOnce({ data: { available: true, reply: "You work 09:00 to 17:00 tomorrow." } });
-    const onFetchRange = vi.fn().mockResolvedValue(undefined);
-
-    render(<CoachChatFab context={contextWithHorizon} onFetchRange={onFetchRange} />);
-    fireEvent.click(fab());
-    fireEvent.click(await screen.findByRole("button", { name: "How much free time do I have today?" }));
-
-    // Nothing is loaded: the day is already there, so the coach is asked again with it.
-    expect(await screen.findByText("You work 09:00 to 17:00 tomorrow.")).toBeInTheDocument();
-    expect(screen.queryByText("Loading that day.")).not.toBeInTheDocument();
-    expect(onFetchRange).not.toHaveBeenCalled();
-    expect(post).toHaveBeenCalledTimes(2);
-
-    // The retry carries the day's row as invisible guidance.
-    const retry = post.mock.calls[1]![1] as { messages: { role: string; content: string }[] };
-    expect(retry.messages[retry.messages.length - 1]!.content).toContain("2026-10-15");
-    expect(retry.messages[retry.messages.length - 1]!.content).toContain("windowStart 09:00");
   });
 });
