@@ -72,6 +72,14 @@ class GeminiCoachService
     private const PLAN_MARKER = '/\[\[\s*PLAN\s*:\s*(\d+)\s*\|\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?\s*\]\]/i';
 
     /**
+     * The line suffix the coach uses when it needs a day its snapshot did not
+     * cover: `[[FETCH:2026-10-27]]`. The server strips these out and returns the
+     * day, so the client can load that range and ask again instead of the coach
+     * guessing about a day it was never given.
+     */
+    private const FETCH_MARKER = '/\[\[\s*FETCH\s*:\s*(\d{4}-\d{2}-\d{2})\s*\]\]/i';
+
+    /**
      * Whether an API key has been configured for Gemini.
      */
     public function isConfigured(): bool
@@ -183,6 +191,45 @@ class GeminiCoachService
         return [
             'text' => trim(implode("\n", $kept)),
             'plans' => $plans,
+        ];
+    }
+
+    /**
+     * Split a coach reply into the text the user should see and the days whose
+     * calendar data the coach asked for. A `[[FETCH:YYYY-MM-DD]]` marker means the
+     * day was not in the snapshot; the client loads that range and re-asks, so the
+     * coach never has to guess about a day it was not given.
+     *
+     * @return array{text: string, fetches: array<int, array{day: string}>}
+     */
+    public function extractFetches(string $text): array
+    {
+        $fetches = [];
+        $kept = [];
+
+        foreach (preg_split('/\R/', $text) ?: [] as $line) {
+            $count = preg_match_all(self::FETCH_MARKER, $line, $matches);
+
+            if ($count === false || $count === 0) {
+                $kept[] = $line;
+
+                continue;
+            }
+
+            foreach ($matches[1] as $day) {
+                $fetches[] = ['day' => $day];
+            }
+
+            $reason = trim((string) preg_replace('/\s+/', ' ', (string) preg_replace(self::FETCH_MARKER, '', $line)));
+
+            if ($reason !== '') {
+                $kept[] = $reason;
+            }
+        }
+
+        return [
+            'text' => trim(implode("\n", $kept)),
+            'fetches' => $fetches,
         ];
     }
 
@@ -508,6 +555,9 @@ class GeminiCoachService
             'Reply with 2 to 4 short lines. Each line starts with one of: "Good:", "Watch:", "Do:".',
             'Use plain text only. No markdown, no headings, no bullet characters, no asterisks.',
             'Reference concrete times and durations from the facts. Never invent events.',
+            'freeMs is only the unbooked gaps; workableMs is the time left to work today.',
+            'Focus blocks and work events are work, so they never reduce workableMs.',
+            'Compare any goal or backlog against workableMs, never freeMs.',
             'Study blocks are fixed commitments that consume the day but never count as work hours.',
             'Never add study time to the work goal; only mention study when it changes the read-out.',
             'If the day is already handled, say so plainly instead of inventing work.',
@@ -549,8 +599,23 @@ class GeminiCoachService
             'The snapshot below is the single source of truth. Use only the data in it.',
             'Never invent events, meetings, hours or numbers, and never contradict the snapshot.',
             'Do the arithmetic yourself wherever the snapshot supports it: free = window minus busy,',
+            'freeMs is only the unbooked gaps; today.workableMs is the time left to work, because focus blocks',
+            'and work events are work and do not reduce it. Compare goals and backlogs against workableMs, never freeMs.',
             'still owed today = remaining goal, week left = target minus done, per day = remaining divided by days left.',
             'Never answer "I cannot tell" when a subtraction or division over the snapshot answers the question.',
+            'The working window and the required weekdays are settings, not calendar data: read workStart, workEnd,',
+            'workDays and requiredDays from the "settings" block. Never ask the user to tell you their working window',
+            'or working days — they are already in the snapshot.',
+            'The "horizon" block lists the next 14 days starting today, each with its window (windowStart/windowEnd),',
+            'isRequired, busyHours and freeHours. Answer questions about tomorrow or any later day from those rows,',
+            'even when that day has no events, and pick slots from the horizon and week.days rather than inventing them.',
+            'A day with dataCovered: true has its events loaded. If dataCovered is false, do not call it free and do not',
+            'quote free hours for it, and never ask the user to supply that day\'s schedule yourself.',
+            'Every day in the horizon already has its window and required flag, so questions like "when must I work',
+            'tomorrow" or "how long do I work next Monday" are answered straight from the horizon row, never by loading.',
+            'Only when the user names a date that is NOT in the horizon at all, say you are loading it and end that line',
+            'with the marker [[FETCH:YYYY-MM-DD]] using that date. The app loads it and asks again with the day added.',
+            'Never reply with nothing but "loading": if the horizon or settings already answer the question, answer it.',
             'Treat the requiredDays list as the days the user must work; any other weekday is optional, not owed.',
             'Before confirming a day is free, or that resting or playing is fine, check the whole picture:',
             'week.remainingHours, month.remainingHours and the month pace so far (daysLeft, perDayNeeded,',
@@ -560,7 +625,7 @@ class GeminiCoachService
             'above zero, tasks are still unplaced, or the month pace is behind, do not answer with a bare yes — answer',
             'the question first, then name the backlog hours, the unplaced task hours and the time still needed per day.',
             'A non-required day that already has blocking tasks placed on it is not free time; say so.',
-            'If the snapshot genuinely lacks something, say so plainly and ask for what you need.',
+            'If the snapshot genuinely lacks something the blocks above do not cover, say so plainly and ask for what you need.',
             'Answer the user\'s actual question first, then add at most one short, concrete suggestion.',
             'Be concise: 1 to 4 short sentences, or a few short lines.',
             'Plain text only — no markdown, no headings, no bullet characters, no asterisks.',
@@ -579,7 +644,7 @@ class GeminiCoachService
             'A task is unplaced when its start is null and it is not done — only those can be given a slot.',
             'Tasks marked "blocksWork": true occupy the user\'s time; the others are flexible and can be moved or skipped.',
             'When the user asks where or when to do a task, recommend one concrete local day and time for it.',
-            'Pick slots from the week.days list: it gives every day of this week with its window, busy hours and free hours.',
+            'Pick slots from the horizon and week.days lists: they give each day with its window, busy hours and free hours.',
             'Only propose a day whose freeHours is at least the task\'s estimate in minutes divided by 60.',
             'Prefer a free gap on a required weekday in the current week while the remaining work still fits;',
             'if the remaining work for the week will not fit in the free time left, say so plainly and place it next week instead.',
@@ -628,9 +693,10 @@ class GeminiCoachService
             $this->localNowLine($context),
             'Never propose a day earlier than today, and never propose a time that has already passed.',
             'A slot later on today is still today: say "later today", never name a future weekday for it.',
-            'Pick slots from the week.days list below: it gives every day of this week with its window, busy hours and free hours.',
+            'Pick slots from the horizon and week.days lists below: each gives a day with its window, busy hours and free hours.',
+            'Only use a day whose dataCovered is true, so you never place a task into a day whose calendar was not loaded.',
             'Only propose a day whose freeHours is at least the task\'s estimate in minutes divided by 60.',
-            'Prefer the current week: use free gaps on days the user can work, and keep the remaining work for the week in mind.',
+            'Prefer the current week or the one right after: use free gaps on days the user can work, and keep the remaining work for the week in mind.',
             'If the remaining work for this week will not fit in the free time left, say so and place those tasks next week instead.',
             'Write exactly one short line per task: the reason first, then the marker.',
             'The marker is [[PLAN:<task id>|<YYYY-MM-DD HH:MM>]] with the user\'s LOCAL clock time, never UTC.',

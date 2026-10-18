@@ -197,6 +197,8 @@ export interface CoachChatResponse {
   reply?: string;
   /** Placements the coach recommends for side tasks, if any. */
   suggestions?: CoachPlanSuggestion[];
+  /** A day the coach's snapshot did not cover; the client loads it and asks again. */
+  fetch?: { day: string } | null;
   generatedAt?: string;
   message?: string;
 }
@@ -312,11 +314,19 @@ export function useCalendarAccounts() {
   return useQuery({ queryKey: ["calendar", "accounts"], queryFn: calendarApi.accounts });
 }
 
+/**
+ * Cache key for one loaded event range. Shared so the coach can load a missing
+ * range with `queryClient.fetchQuery` and have the calendar hook pick it up.
+ */
+export function calendarEventsKey(from: string, to: string) {
+  return ["calendar", "events", from, to] as const;
+}
+
 export function useCalendarEvents(from: Date, to: Date) {
   const f = from.toISOString();
   const t = to.toISOString();
   return useQuery({
-    queryKey: ["calendar", "events", f, t],
+    queryKey: calendarEventsKey(f, t),
     queryFn: () => calendarApi.events(f, t),
     // Events come from the local cache; only a manual sync updates them.
   });
@@ -874,7 +884,13 @@ export interface DayFacts {
   windowMs: number;
   /** Non-work event time inside the remaining window; already includes study. */
   busyMs: number;
+  /** Unbooked time: the remaining window minus everything, focus blocks and work events too. */
   freeMs: number;
+  /**
+   * Time left to work today: the remaining window minus meetings, blocking tasks
+   * and study. Focus blocks and work events are work, so they never shrink it.
+   */
+  workableMs: number;
   longestGapMs: number;
   trackedMs: number;
   goalMs: number;
@@ -1025,6 +1041,11 @@ export function computeDayInsights(args: {
     : [];
   const freeGaps = remainingWindowMs > 0 ? freeIntervals({ start, end: windowEnd }, [...busyFromNow, ...workFromNow, ...focusFromNow, ...trackedFromNow]) : [];
   const freeMs = totalMs(freeGaps);
+  // How much of the window can still be spent working: only meetings, blocking
+  // tasks and study are taken out. Focus blocks, work events and tracked time
+  // are work toward the goal, so the pacing and backlog insights compare
+  // against this instead of the unbooked gaps.
+  const workableMs = Math.max(0, remainingWindowMs - busyMs);
   const longestGapMs = freeGaps.reduce((max, iv) => Math.max(max, iv.end - iv.start), 0);
 
   const dayEvents = timed.filter((e) => {
@@ -1051,6 +1072,7 @@ export function computeDayInsights(args: {
     windowMs: remainingWindowMs,
     busyMs,
     freeMs,
+    workableMs,
     longestGapMs,
     trackedMs: budget.trackedMs,
     goalMs: budget.goalMs,
@@ -1227,12 +1249,16 @@ export function computeDayInsights(args: {
   }
 
   // R10 — backlog pressure
-  if ((args.backlogHours ?? 0) > 0 && freeMs > 0) {
+  if ((args.backlogHours ?? 0) > 0 && workableMs > 0) {
+    const backlogMs = args.backlogHours! * 3600_000;
     insights.push({
       id: "backlog",
       tone: "info",
       title: "Backlog",
-      detail: `You carry ${formatHM(args.backlogHours! * 3600_000)} of backlog. Today's free time can cover ${formatHM(freeMs)}.`,
+      detail:
+        workableMs >= backlogMs
+          ? `You carry ${formatHM(backlogMs)} of backlog, but the ${formatHM(workableMs)} left to work today covers all of it.`
+          : `You carry ${formatHM(backlogMs)} of backlog. Only ${formatHM(workableMs)} of work time is left today, so that is all it can absorb.`,
     });
   }
 
@@ -1242,12 +1268,12 @@ export function computeDayInsights(args: {
     const perDayMs = pph * 3600_000;
     insights.push({
       id: "monthly",
-      tone: perDayMs > freeMs ? "warn" : "info",
+      tone: perDayMs > workableMs ? "warn" : "info",
       title: "Monthly pacing",
       detail:
-        perDayMs > freeMs
-          ? `You need ${pph.toFixed(1)}h/day this month, but only ${formatHM(freeMs)} is free today.`
-          : `You need ${pph.toFixed(1)}h/day this month. Today's ${formatHM(freeMs)} of free time covers it.`,
+        perDayMs > workableMs
+          ? `You need ${pph.toFixed(1)}h/day this month, but only ${formatHM(workableMs)} is left to work today.`
+          : `You need ${pph.toFixed(1)}h/day this month. Today's ${formatHM(workableMs)} left to work covers it.`,
     });
   }
 
@@ -1290,6 +1316,45 @@ export interface CoachWeekDay {
   /** Free time left: from now on today, the whole window on later days. */
   freeHours: number;
 }
+
+/**
+ * A day in the coach's rolling horizon. Beyond the plain window numbers it
+ * records whether the client actually loaded that day's events, so the coach can
+ * ask for a fetch instead of mistaking "no data" for "free time".
+ */
+export interface CoachHorizonDay extends CoachWeekDay {
+  /** True once the day is over; a past day offers nothing to schedule into. */
+  isPast: boolean;
+  /** Whether the loaded event range covers this day, so its free time is real. */
+  dataCovered: boolean;
+}
+
+/** The window of calendar data the client actually loaded for the coach. */
+export interface CoachCoverage {
+  /** ISO instant the loaded range starts, inclusive. */
+  from: string;
+  /** ISO instant the loaded range ends, exclusive. */
+  to: string;
+}
+
+/** The rolling window of upcoming days the coach always reasons over. */
+export interface CoachHorizon {
+  from: string;
+  to: string;
+  days: CoachHorizonDay[];
+}
+
+/**
+ * How many days ahead (today included) the coach's snapshot always describes, so
+ * questions about tomorrow or the coming weeks are answered without a round trip.
+ */
+export const COACH_HORIZON_DAYS = 14;
+
+/**
+ * Hard ceiling on the horizon. It stretches to cover any day the coach asks for,
+ * but a bad marker can never turn it into an unbounded list.
+ */
+export const COACH_HORIZON_MAX_DAYS = 120;
 
 /** Week-level grounding for the coach chat. */
 export interface CoachWeekContext {
@@ -1376,8 +1441,14 @@ export interface CoachContext {
   /** Minutes to add to UTC to reach the user's local clock (120 for UTC+2). */
   utcOffsetMinutes: number;
   dailyGoalHours: number;
+  /** The user's saved working window, working days and required days. */
+  settings: CalendarSettings;
   today: DayFacts;
   week: CoachWeekContext | null;
+  /** The next two weeks, day by day, so tomorrow is never a blank. */
+  horizon: CoachHorizon;
+  /** The event range the client loaded; null until it resolves. */
+  coverage: CoachCoverage | null;
   month: CoachMonthContext | null;
   backlogHours: number | null;
   streak: number | null;
@@ -1405,8 +1476,10 @@ export function buildCoachContext(args: {
   tasks?: SideTask[];
   /** All tracked sessions; the study ones are pulled out for the coach. */
   studySessions?: CalendarSession[];
-  /** Calendar events for the visible range, so other days are real, not guessed. */
+  /** Calendar events for the loaded range, so other days are real, not guessed. */
   events?: CalendarEvent[];
+  /** The range `events` was loaded for; a day outside it is flagged as uncovered. */
+  coverage?: CoachCoverage | null;
   goalHours?: number;
 }): CoachContext {
   const goalHours = args.goalHours ?? DAILY_GOAL_HOURS;
@@ -1428,12 +1501,17 @@ export function buildCoachContext(args: {
   const studyList = (args.studySessions ?? []).filter((session) => (session.type ?? "work") === "study");
   const roundHours = (hours: number) => Math.round(hours * 10) / 10;
 
-  // One row per day of the week, with real busy/free numbers. Without this the
-  // model can only see today, so every slot it proposes on another day is a guess.
+  const coverage = args.coverage ?? null;
+  const coverageIv: Interval | null = coverage
+    ? { start: new Date(coverage.from).getTime(), end: new Date(coverage.to).getTime() }
+    : null;
+
+  // One row per day, with real busy/free numbers. Without this the model can only
+  // see today, so every slot it proposes on another day is a guess.
   const clockOf = (ms: number): string => new Date(ms).toTimeString().slice(0, 5);
-  const weekDays: CoachWeekDay[] = [];
-  for (let i = 0; i < 7; i++) {
-    const day = addDays(weekStart, i);
+  const describeDay = (day: Date): CoachHorizonDay => {
+    const dayStartMs = startOfDay(day).getTime();
+    const dayEndMs = dayStartMs + MS_PER_DAY;
     const working = isWorkDay(day, args.settings);
     const window = workWindow(day, args.settings);
     const windowStartMs = window.start;
@@ -1455,7 +1533,7 @@ export function buildCoachContext(args: {
     );
     const freeMs = windowEndMs <= args.now ? 0 : Math.max(0, windowEndMs - freeFromMs - busyAheadMs);
 
-    weekDays.push({
+    return {
       dayKey: `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`,
       weekday: day.toLocaleDateString("en-US", { weekday: "long" }),
       isToday: sameDay(day, today),
@@ -1465,7 +1543,33 @@ export function buildCoachContext(args: {
       windowEnd: working ? clockOf(windowEndMs) : null,
       busyHours: roundHours(busyMs / 3_600_000),
       freeHours: roundHours(freeMs / 3_600_000),
-    });
+      isPast: dayEndMs <= args.now,
+      dataCovered:
+        coverageIv !== null && dayStartMs >= coverageIv.start && dayEndMs <= coverageIv.end,
+    };
+  };
+
+  const weekDays: CoachWeekDay[] = [];
+  for (let i = 0; i < 7; i++) {
+    weekDays.push(describeDay(addDays(weekStart, i)));
+  }
+
+  // The rolling two-week horizon runs from today, so "tomorrow" is always present
+  // even on the last day of the week, when the week rows above stop at Sunday.
+  // The horizon always spans the base two weeks, and stretches to the end of the
+  // loaded range, so a day the coach asked us to fetch shows up with its window
+  // and busy hours on the next turn instead of being asked for all over again.
+  const horizonStart = startOfDay(today);
+  const baseHorizonEnd = addDays(horizonStart, COACH_HORIZON_DAYS);
+  const horizonEnd =
+    coverageIv !== null && coverageIv.end > baseHorizonEnd.getTime() ? new Date(coverageIv.end) : baseHorizonEnd;
+  const horizonDays: CoachHorizonDay[] = [];
+  for (
+    let day = horizonStart;
+    day.getTime() < horizonEnd.getTime() && horizonDays.length < COACH_HORIZON_MAX_DAYS;
+    day = addDays(day, 1)
+  ) {
+    horizonDays.push(describeDay(day));
   }
 
   const week: CoachWeekContext = {
@@ -1550,8 +1654,17 @@ export function buildCoachContext(args: {
     timeZone: resolveTimeZone(),
     utcOffsetMinutes: new Date(args.now).getTimezoneOffset() * -1,
     dailyGoalHours: goalHours,
+    // The window and required days are settings, not calendar data, so the coach
+    // can answer "when must I work tomorrow" even with no events loaded.
+    settings: args.settings,
     today: args.intel.facts,
     week,
+    horizon: {
+      from: horizonStart.toISOString(),
+      to: horizonEnd.toISOString(),
+      days: horizonDays,
+    },
+    coverage,
     month,
     backlogHours: args.stats?.backlogHours ?? null,
     streak: args.stats?.streak ?? null,

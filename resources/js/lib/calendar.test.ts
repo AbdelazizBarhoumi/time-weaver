@@ -455,6 +455,74 @@ describe("computeDayInsights", () => {
     expect(intel.facts.freeMs).toBe(5 * 3_600_000);
   });
 
+  it("counts planned work as time left to work, not as busy time", () => {
+    // A focus block fills the rest of the window: nothing is unbooked, but it is
+    // work, so the pacing read-out must not claim the day is out of time.
+    const focusBlocks = [{ id: 1, title: "Working", start: at(wednesday, 12), end: at(wednesday, 17) }];
+    const intel = computeDayInsights({
+      ...base,
+      events: [],
+      focusBlocks,
+      trackedIntervals: [],
+      perDayNeededHours: 4,
+    });
+
+    expect(intel.facts.freeMs).toBe(0);
+    expect(intel.facts.workableMs).toBe(5 * 3_600_000);
+
+    const monthly = intel.insights.find((i) => i.id === "monthly");
+    expect(monthly?.tone).toBe("info");
+    expect(monthly?.detail).toContain("5h left to work covers it");
+  });
+
+  it("warns when the time left to work falls short of the monthly pace", () => {
+    const events = [makeEvent({ start: at(wednesday, 12), end: at(wednesday, 15) })];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [], perDayNeededHours: 4 });
+
+    expect(intel.facts.workableMs).toBe(2 * 3_600_000);
+
+    const monthly = intel.insights.find((i) => i.id === "monthly");
+    expect(monthly?.tone).toBe("warn");
+    expect(monthly?.detail).toContain("only 2h is left to work today");
+  });
+
+  it("subtracts meetings, blocking tasks and study from the time left to work", () => {
+    const events = [makeEvent({ start: at(wednesday, 12), end: at(wednesday, 14) })];
+    const extraBusy = blockingTaskIntervals(
+      [makeTask({ start: at(wednesday, 14), end: at(wednesday, 15) })],
+      workWindow(wednesday, settings),
+    );
+    const studyIntervals: Interval[] = [
+      { start: new Date(at(wednesday, 15)).getTime(), end: new Date(at(wednesday, 16)).getTime() },
+    ];
+
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [], extraBusy, studyIntervals });
+
+    expect(intel.facts.busyMs).toBe(4 * 3_600_000);
+    expect(intel.facts.workableMs).toBe(3_600_000);
+  });
+
+  it("covers the backlog out of the workable time, not the unbooked gaps", () => {
+    const focusBlocks = [{ id: 1, title: "Working", start: at(wednesday, 12), end: at(wednesday, 15) }];
+    const intel = computeDayInsights({ ...base, events: [], focusBlocks, trackedIntervals: [], backlogHours: 2 });
+
+    // Only 2h are unbooked, but the 3h focus block is work: 5h can absorb a 2h backlog.
+    expect(intel.facts.freeMs).toBe(2 * 3_600_000);
+
+    const backlog = intel.insights.find((i) => i.id === "backlog");
+    expect(backlog?.detail).toContain("covers all of it");
+  });
+
+  it("says how much of the backlog today can absorb when work time is short", () => {
+    const events = [makeEvent({ start: at(wednesday, 12), end: at(wednesday, 14) })];
+    const intel = computeDayInsights({ ...base, events, trackedIntervals: [], backlogHours: 4 });
+
+    expect(intel.facts.workableMs).toBe(3 * 3_600_000);
+
+    const backlog = intel.insights.find((i) => i.id === "backlog");
+    expect(backlog?.detail).toContain("Only 3h of work time is left today");
+  });
+
   it("flags back-to-back meetings", () => {
     const events = [
       makeEvent({ start: at(wednesday, 13), end: at(wednesday, 14) }),
@@ -986,6 +1054,71 @@ describe("buildCoachContext", () => {
     expect(ctx.tasks).toHaveLength(40);
     expect(ctx.tasksSummary.total).toBe(45);
     expect(ctx.tasksSummary.unplaced).toBe(45);
+  });
+
+  it("echoes the working settings so the coach never has to ask for them", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon });
+
+    expect(ctx.settings).toEqual(settings);
+  });
+
+  it("describes a rolling two-week horizon starting today", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon });
+
+    expect(ctx.horizon.from).toBe(new Date(2026, 9, 14).toISOString());
+    expect(ctx.horizon.to).toBe(new Date(2026, 9, 28).toISOString());
+    expect(ctx.horizon.days).toHaveLength(14);
+    expect(ctx.horizon.days[0]!.dayKey).toBe("2026-10-14");
+    expect(ctx.horizon.days[13]!.dayKey).toBe("2026-10-27");
+  });
+
+  it("keeps tomorrow in the horizon even when it falls in the next week", () => {
+    // Sunday: the Monday-start week stops today, so tomorrow is outside week.days.
+    const sunday = new Date(2026, 9, 18, 12, 0, 0);
+    const sundayIntel = computeDayInsights({
+      day: sunday,
+      now: sunday.getTime(),
+      focusBlocks: [],
+      settings,
+      events: [],
+      trackedIntervals: [],
+    });
+    const ctx = buildCoachContext({ intel: sundayIntel, settings, now: sunday.getTime(), stats, month });
+
+    expect(ctx.week!.days.map((d) => d.dayKey)).not.toContain("2026-10-19");
+
+    // …but the horizon always reaches it, with its window and required flag, so
+    // the coach can answer "when must I work tomorrow" without any events.
+    const tomorrow = ctx.horizon.days[1]!;
+    expect(tomorrow.dayKey).toBe("2026-10-19");
+    expect(tomorrow.weekday).toBe("Monday");
+    expect(tomorrow.isRequired).toBe(true);
+    expect(tomorrow.windowStart).toBe("09:00");
+    expect(tomorrow.windowEnd).toBe("17:00");
+    expect(tomorrow.freeHours).toBe(8);
+    expect(tomorrow.isPast).toBe(false);
+  });
+
+  it("flags horizon days the loaded range does not cover", () => {
+    const ctx = buildCoachContext({
+      intel,
+      settings,
+      now: noon,
+      coverage: { from: new Date(2026, 9, 14).toISOString(), to: new Date(2026, 9, 16).toISOString() },
+    });
+
+    expect(ctx.horizon.days[0]!.dataCovered).toBe(true);
+    expect(ctx.horizon.days[1]!.dataCovered).toBe(true);
+    // The range ends at midnight on the 16th, so that whole day is not covered.
+    expect(ctx.horizon.days[2]!.dataCovered).toBe(false);
+    expect(ctx.horizon.days[3]!.dataCovered).toBe(false);
+  });
+
+  it("treats every day as uncovered until an event range is loaded", () => {
+    const ctx = buildCoachContext({ intel, settings, now: noon });
+
+    expect(ctx.coverage).toBeNull();
+    expect(ctx.horizon.days.every((day) => !day.dataCovered)).toBe(true);
   });
 });
 

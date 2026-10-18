@@ -52,6 +52,7 @@ class CalendarInsightCoachTest extends TestCase
             'windowMs' => 18_000_000,
             'busyMs' => 3_600_000,
             'freeMs' => 14_400_000,
+            'workableMs' => 14_400_000,
             'longestGapMs' => 7_200_000,
             'trackedMs' => 0,
             'goalMs' => 28_800_000,
@@ -300,6 +301,16 @@ class CalendarInsightCoachTest extends TestCase
             ->assertJsonValidationErrors(['facts.isWorkDay', 'facts.freeMs']);
     }
 
+    public function test_coach_is_told_to_compare_goals_against_workable_time(): void
+    {
+        $this->fakeReply('Good: Plenty of time left to work.');
+
+        $this->postCoach()->assertStatus(200);
+
+        Http::assertSent(fn ($request) => str_contains($request['input'], '"workableMs": 14400000')
+            && str_contains($request['system_instruction'], 'Compare any goal or backlog against workableMs, never freeMs.'));
+    }
+
     public function test_service_throws_when_not_configured(): void
     {
         config(['services.gemini.key' => null]);
@@ -404,6 +415,36 @@ class CalendarInsightCoachTest extends TestCase
             'timeZone' => 'Europe/Berlin',
             'utcOffsetMinutes' => 120,
             'dailyGoalHours' => 8,
+            'settings' => [
+                'workStart' => '09:00',
+                'workEnd' => '17:00',
+                'workKeywords' => ['standup'],
+                'workDays' => [1, 2, 3, 4, 5],
+                'requiredDays' => [1, 2, 3, 4, 5],
+            ],
+            'horizon' => [
+                'from' => '2026-10-14T00:00:00.000Z',
+                'to' => '2026-10-28T00:00:00.000Z',
+                'days' => [
+                    [
+                        'dayKey' => '2026-10-15',
+                        'weekday' => 'Thursday',
+                        'isToday' => false,
+                        'isWorkDay' => true,
+                        'isRequired' => true,
+                        'windowStart' => '09:00',
+                        'windowEnd' => '17:00',
+                        'busyHours' => 1,
+                        'freeHours' => 7,
+                        'isPast' => false,
+                        'dataCovered' => true,
+                    ],
+                ],
+            ],
+            'coverage' => [
+                'from' => '2026-10-14T00:00:00.000Z',
+                'to' => '2026-10-28T00:00:00.000Z',
+            ],
             'today' => $this->facts(),
             'week' => [
                 'startDayKey' => '2026-10-12',
@@ -755,5 +796,71 @@ class CalendarInsightCoachTest extends TestCase
 
         $this->assertSame([['taskId' => 3, 'start' => '2026-10-22T08:15', 'reason' => '']], $result['plans']);
         $this->assertSame('', $result['text']);
+    }
+
+    public function test_chat_returns_the_day_the_coach_needs_loaded(): void
+    {
+        $this->fakeReply("I have not loaded that day yet. [[FETCH:2026-10-27]]\nGive me a moment.");
+
+        $this->postChat()
+            ->assertStatus(200)
+            ->assertJsonPath('fetch.day', '2026-10-27')
+            // The marker is stripped from the visible reply.
+            ->assertJsonPath('reply', "I have not loaded that day yet.\nGive me a moment.");
+    }
+
+    public function test_chat_returns_no_fetch_when_the_snapshot_needs_nothing(): void
+    {
+        $this->fakeReply('Tomorrow is a required day, 09:00 to 17:00.');
+
+        $this->postChat()
+            ->assertStatus(200)
+            ->assertJsonPath('fetch', null);
+    }
+
+    public function test_extract_fetches_ignores_malformed_markers(): void
+    {
+        $result = (new GeminiCoachService)->extractFetches(
+            "Good: [[FETCH:soon]] stays visible.\n"
+            ."OK: [[FETCH:2026-10-2]] stays visible.\n"
+            ."Fine: [[FETCH:2026-10-27]] goes out. [[FETCH:2026-11-03]] too.\n"
+            .'Plain text.',
+        );
+
+        $this->assertSame([
+            ['day' => '2026-10-27'],
+            ['day' => '2026-11-03'],
+        ], $result['fetches']);
+
+        $this->assertSame(
+            "Good: [[FETCH:soon]] stays visible.\n"
+            ."OK: [[FETCH:2026-10-2]] stays visible.\n"
+            ."Fine: goes out. too.\n"
+            .'Plain text.',
+            $result['text'],
+        );
+    }
+
+    public function test_chat_grounds_the_coach_in_settings_and_the_horizon(): void
+    {
+        $this->fakeReply('Tomorrow is a required day, 09:00 to 17:00.');
+
+        $this->postChat()->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $system = $request['system_instruction'];
+
+            return str_contains($system, 'The working window and the required weekdays are settings')
+                // The rule that stops the coach asking the user for its own settings.
+                && str_contains($system, 'Never ask the user to tell you their working window')
+                && str_contains($system, 'The "horizon" block lists the next 14 days starting today')
+                && str_contains($system, 'do not call it free')
+                && str_contains($system, '[[FETCH:YYYY-MM-DD]]')
+                // The settings and horizon reaches the model, window and all.
+                && str_contains($system, '"requiredDays": [')
+                && str_contains($system, '"windowStart": "09:00"')
+                && str_contains($system, '"dataCovered": true')
+                && str_contains($system, '"freeHours": 7');
+        });
     }
 }

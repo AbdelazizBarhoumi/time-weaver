@@ -55,6 +55,7 @@ class CalendarInsightController extends Controller
             'facts.windowMs' => ['required', 'integer', 'min:0'],
             'facts.busyMs' => ['required', 'integer', 'min:0'],
             'facts.freeMs' => ['required', 'integer', 'min:0'],
+            'facts.workableMs' => ['nullable', 'integer', 'min:0'],
             'facts.longestGapMs' => ['required', 'integer', 'min:0'],
             'facts.trackedMs' => ['required', 'integer', 'min:0'],
             'facts.goalMs' => ['required', 'integer', 'min:0'],
@@ -150,10 +151,15 @@ class CalendarInsightController extends Controller
         // showing the raw syntax.
         $parsed = $this->gemini->extractPlans($reply);
 
+        // A day the snapshot did not cover hides itself in a [[FETCH:…]] marker.
+        // Pull it out too, so the client can load that range and ask again.
+        $needs = $this->gemini->extractFetches($parsed['text']);
+
         return response()->json([
             'available' => true,
-            'reply' => $parsed['text'],
+            'reply' => $needs['text'],
             'suggestions' => $parsed['plans'],
+            'fetch' => $needs['fetches'][0] ?? null,
             'generatedAt' => now()->toIso8601String(),
         ]);
     }
