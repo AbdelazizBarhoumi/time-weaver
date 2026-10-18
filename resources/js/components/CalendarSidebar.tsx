@@ -137,6 +137,7 @@ export function AccountsCard({
   accounts,
   hidden,
   syncing,
+  syncingAccountId,
   onToggleVisibility,
   onToggleDefaultWork,
   onSync,
@@ -145,10 +146,13 @@ export function AccountsCard({
 }: {
   accounts: CalendarAccount[];
   hidden: Set<number>;
+  /** Any sync is running — the row buttons wait for it. */
   syncing: boolean;
+  /** The single mailbox being refreshed, or null for a refresh of them all. */
+  syncingAccountId: number | null;
   onToggleVisibility: (id: number) => void;
   onToggleDefaultWork: (id: number, defaultWork: boolean) => void;
-  onSync: () => void;
+  onSync: (accountId?: number) => void;
   onPurge: (id: number) => void;
   onRestoreHidden: (id: number) => void;
 }) {
@@ -166,10 +170,10 @@ export function AccountsCard({
             size="sm"
             className="h-7 px-2"
             disabled={syncing || !hasConnected}
-            onClick={onSync}
+            onClick={() => onSync()}
             title="Fetch the latest events from Google"
           >
-            <RefreshCw className={cn("mr-1 h-3.5 w-3.5", syncing && "animate-spin")} />
+            <RefreshCw className={cn("mr-1 h-3.5 w-3.5", syncing && syncingAccountId === null && "animate-spin")} />
             <span className="font-mono text-[10px] uppercase tracking-wider">{syncing ? "syncing" : "sync"}</span>
           </Button>
         )}
@@ -230,6 +234,17 @@ export function AccountsCard({
             >
               <Briefcase className="h-4 w-4" />
             </button>
+            {!a.disconnected && (
+              <button
+                type="button"
+                disabled={syncing}
+                title="Sync this mailbox now"
+                onClick={() => onSync(a.id)}
+                className="mt-0.5 shrink-0 text-mut hover:text-ink disabled:opacity-40"
+              >
+                <RefreshCw className={cn("h-4 w-4", syncingAccountId === a.id && "animate-spin")} />
+              </button>
+            )}
             {a.disconnected ? (
               <button
                 className="mt-0.5 text-mut hover:text-destructive"

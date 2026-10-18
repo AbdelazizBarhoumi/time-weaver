@@ -363,20 +363,31 @@ function CalendarPage() {
     );
   };
 
-  const runSync = () => {
-    syncCalendars.mutate(undefined, {
-      onSuccess: (result) => {
-        setSyncErrors(result.errors);
-        const removed = result.accounts.reduce((sum, a) => sum + a.removed, 0);
-        if (result.errors.length > 0) {
-          toast.error(`${result.errors.length} calendar(s) could not be synced. Try reconnecting them.`);
-        } else {
-          toast.success(`Synced ${result.synced} event${result.synced === 1 ? "" : "s"}${removed ? `, removed ${removed}` : ""}`);
-        }
+  /** Refresh every mailbox, or only the given one when an account id is passed. */
+  const runSync = (accountId?: number) => {
+    syncCalendars.mutate(
+      { accountId },
+      {
+        onSuccess: (result) => {
+          setSyncErrors(result.errors);
+          const removed = result.accounts.reduce((sum, a) => sum + a.removed, 0);
+          if (result.errors.length > 0) {
+            toast.error(`${result.errors.length} calendar(s) could not be synced. Try reconnecting them.`);
+          } else {
+            const mailbox = accountId ? (accounts.data ?? []).find((a) => a.id === accountId) : undefined;
+            toast.success(
+              `Synced ${result.synced} event${result.synced === 1 ? "" : "s"}${mailbox ? ` from ${mailbox.email}` : ""}${removed ? `, removed ${removed}` : ""}`,
+            );
+          }
+        },
+        onError: () => toast.error("Sync failed. Please try again."),
       },
-      onError: () => toast.error("Sync failed. Please try again."),
-    });
+    );
   };
+
+  /** The mailbox the in-flight sync targets, or null when it refreshes them all. */
+  const syncingAccountId = syncCalendars.isPending ? (syncCalendars.variables?.accountId ?? null) : null;
+  const syncingAll = syncCalendars.isPending && syncingAccountId === null;
 
   /** Arm (or disarm) click-to-place for a task, so the next grid click lands it. */
   const togglePlacing = (task: SideTask) => {
@@ -580,11 +591,11 @@ function CalendarPage() {
             variant="outline"
             size="sm"
             disabled={syncCalendars.isPending || (accounts.data ?? []).every((a) => a.disconnected)}
-            onClick={runSync}
+            onClick={() => runSync()}
             title="Fetch the latest events from Google (manual refresh)"
           >
-            <RefreshCw className={cn("h-4 w-4", syncCalendars.isPending && "animate-spin")} />
-            <span className="ml-1 font-mono text-xs uppercase">{syncCalendars.isPending ? "syncing" : "sync"}</span>
+            <RefreshCw className={cn("h-4 w-4", syncingAll && "animate-spin")} />
+            <span className="ml-1 font-mono text-xs uppercase">{syncingAll ? "syncing" : "sync"}</span>
           </Button>
           {lastSyncedAt && <span className="font-mono text-[10px] text-mut">synced {relativeTime(lastSyncedAt, now)}</span>}
         </div>
@@ -708,6 +719,7 @@ function CalendarPage() {
             accounts={accounts.data ?? []}
             hidden={hidden}
             syncing={syncCalendars.isPending}
+            syncingAccountId={syncingAccountId}
             onToggleVisibility={toggleVisibility}
             onToggleDefaultWork={(id, defaultWork) =>
               updateAccount.mutate(

@@ -226,7 +226,11 @@ export const calendarApi = {
         params: { scope: input.scope, permanent: input.permanent ? 1 : 0 },
       })
       .then((r) => r.data),
-  sync: () => api.post<SyncResult>("/calendar/sync").then((r) => r.data),
+  /** Refresh every connected mailbox, or just one when an id is given. */
+  sync: (accountId?: number) =>
+    api
+      .post<SyncResult>("/calendar/sync", accountId === undefined ? undefined : { account_id: accountId })
+      .then((r) => r.data),
   moveEvent: (input: { cacheId: number; start: string; end: string }) =>
     api.put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, { start: input.start, end: input.end }).then((r) => r.data),
   events: (from: string, to: string) =>
@@ -382,7 +386,11 @@ export const useUpdateCalendarAccount = () =>
   useCalendarMutation((args: { id: number; defaultWork: boolean }) => calendarApi.updateAccount(args.id, args.defaultWork));
 export const useDeleteCalendarEvent = () =>
   useCalendarMutation((input: DeleteEventInput) => calendarApi.deleteEvent(input));
-export const useSyncCalendars = () => useCalendarMutation(() => calendarApi.sync());
+/** Refresh every connected mailbox, or only the given one when an id is passed. */
+export const useSyncCalendars = () =>
+  useCalendarMutation<{ accountId?: number | undefined } | undefined, SyncResult>((vars) =>
+    calendarApi.sync(vars?.accountId),
+  );
 export const useTagEvent = () => useCalendarMutation((input: TagEventInput) => calendarApi.tag(input));
 export const useMoveEvent = () =>
   useCalendarMutation((input: { cacheId: number; start: string; end: string }) => calendarApi.moveEvent(input));

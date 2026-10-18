@@ -167,6 +167,53 @@ class CalendarSyncTest extends TestCase
         $this->assertDatabaseHas('calendar_events', ['id' => $event->id]);
     }
 
+    public function test_sync_can_target_a_single_account(): void
+    {
+        $other = CalendarAccount::factory()->create(['user_id' => $this->user->id]);
+
+        $this->fakeGoogle([$this->timedEvent('evt-1', now()->addDay()->setTime(9, 0))]);
+
+        $this->postJson('/api/calendar/sync', ['account_id' => $other->id])
+            ->assertOk()
+            ->assertJsonPath('synced', 1)
+            ->assertJsonCount(1, 'accounts')
+            ->assertJsonPath('accounts.0.accountId', $other->id);
+
+        $this->assertDatabaseHas('calendar_events', [
+            'calendar_account_id' => $other->id,
+            'event_id' => 'evt-1',
+        ]);
+        // The user's other mailbox was left alone.
+        $this->assertNull($this->account->fresh()->last_synced_at);
+    }
+
+    public function test_sync_cannot_target_another_users_account(): void
+    {
+        $intruder = User::factory()->create();
+
+        $this->actingAs($intruder)
+            ->postJson('/api/calendar/sync', ['account_id' => $this->account->id])
+            ->assertStatus(404);
+
+        $this->assertNull($this->account->fresh()->last_synced_at);
+    }
+
+    public function test_sync_skips_a_disconnected_target_account(): void
+    {
+        $this->account->update([
+            'disconnected_at' => now(),
+            'access_token' => '',
+            'refresh_token' => null,
+            'expires_at' => null,
+        ]);
+
+        // Http::preventStrayRequests() is active: touching Google would fail.
+        $this->postJson('/api/calendar/sync', ['account_id' => $this->account->id])
+            ->assertStatus(200)
+            ->assertJsonPath('synced', 0)
+            ->assertJsonCount(0, 'accounts');
+    }
+
     public function test_index_reads_from_the_cache_without_network(): void
     {
         CalendarEvent::factory()->create([

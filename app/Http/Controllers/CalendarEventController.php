@@ -109,10 +109,15 @@ class CalendarEventController extends Controller
     }
 
     /**
-     * Manually refresh every connected account into the cache.
+     * Pull Google's events into the cache — for every connected mailbox, or a
+     * single one when an account id is passed.
      */
     public function sync(Request $request): JsonResponse
     {
+        $data = $request->validate([
+            'account_id' => ['sometimes', 'integer'],
+        ]);
+
         $user = $request->user();
 
         $from = $request->filled('from')
@@ -122,10 +127,18 @@ class CalendarEventController extends Controller
             ? Carbon::parse($request->string('to'))
             : now()->addMonths(self::SYNC_MONTHS_FORWARD)->endOfDay();
 
+        $targets = $user->calendarAccounts()->whereNull('disconnected_at');
+
+        if (array_key_exists('account_id', $data)) {
+            // Another user's mailbox is a 404, like every other per-account route.
+            $user->calendarAccounts()->whereKey($data['account_id'])->firstOrFail();
+            $targets->whereKey($data['account_id']);
+        }
+
         $accounts = [];
         $errors = [];
 
-        foreach ($user->calendarAccounts()->whereNull('disconnected_at')->get() as $account) {
+        foreach ($targets->get() as $account) {
             /** @var CalendarAccount $account */
             try {
                 $summary = $this->sync->sync($account, $from, $to);
