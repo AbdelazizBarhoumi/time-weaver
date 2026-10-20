@@ -1,9 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Heatmap } from "@/components/Heatmap";
 import { ManualEntryDialog } from "@/components/ManualEntryDialog";
 import { MonthlyCard } from "@/components/MonthlyCard";
 import { SessionsPanel } from "@/components/SessionsPanel";
+import { TaskPanel } from "@/components/TaskPanel";
 import { TimerCard } from "@/components/TimerCard";
 import { TodayPlanCard } from "@/components/TodayPlanCard";
 import { FloatingTimerWidget } from "@/components/FloatingTimerWidget";
@@ -35,6 +37,7 @@ import {
   useRemoveDayOff,
 } from "@/lib/queries";
 import type { ApiWorkSession } from "@/lib/api";
+import { useDeleteWorkTask, useWorkTasks, type WorkTask } from "@/lib/workTasks";
 
 function apiToWorkSession(s: ApiWorkSession): WorkSession {
   return {
@@ -48,6 +51,7 @@ function apiToWorkSession(s: ApiWorkSession): WorkSession {
     pausedAt: s.pausedAt,
     segments: s.segments,
     segmentsInferred: s.segmentsInferred,
+    workTaskId: s.workTaskId ?? null,
   };
 }
 
@@ -85,10 +89,12 @@ function Index() {
   const { data: stats } = useStats();
   const { data: monthlyBreakdown = [] } = useMonthlyBreakdown();
   const { data: dayOffs = [] } = useDayOffs();
+  const { data: workTasks = [] } = useWorkTasks();
 
   const createSession = useCreateSession();
   const updateSession = useUpdateSession();
   const deleteSession = useDeleteSession();
+  const deleteWorkTask = useDeleteWorkTask();
   const confirm = useConfirm();
   const addDayOff = useAddDayOff();
   const removeDayOff = useRemoveDayOff();
@@ -110,13 +116,42 @@ function Index() {
   const sessionsTyped = sessions as ApiWorkSession[];
   const hasActive = sessionsTyped.some((s) => !s.end);
 
-  const startSession = (type: "work" | "study" = "work") => {
+  const startSession = (type: "work" | "study" = "work", taskId: number | null = null) => {
     if (hasActive) return;
     createSession.mutate({
       start: new Date().toISOString(),
       type,
       segments: startSegments(Date.now()),
+      work_task_id: taskId,
     });
+  };
+
+  /** The task the running timer is bound to, if any. */
+  const activeTaskId = sessionsTyped.find((s) => !s.end && s.workTaskId != null)?.workTaskId ?? null;
+  const activeTaskTitle = workTasks.find((task) => task.id === activeTaskId)?.title ?? null;
+
+  /** Start the timer bound to a task (the panel has already marked it began). */
+  const startTaskWithTimer = (task: WorkTask) => {
+    if (hasActive) {
+      toast.info("A session is already running — stop it to start this task.");
+      return;
+    }
+    startSession("work", task.id);
+    toast.success(`Tracking "${task.title}"`);
+  };
+
+  const handleDeleteTask = async (task: WorkTask) => {
+    const confirmed = await confirm({
+      title: `Delete "${task.title}"?`,
+      description: "Tracked time already logged against it is kept. This cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    deleteWorkTask.mutate(task.id);
   };
 
   const pauseSession = () => {
@@ -260,31 +295,60 @@ function Index() {
           </div>
         </header>
 
-<main className="mt-8 grid grid-cols-12 gap-5">
-          <TimerCard
-            sessions={workSessions}
-            now={now}
-            onStart={() => startSession("work")}
-            onStartStudy={() => startSession("study")}
-            onPause={pauseSession}
-            onResume={resumeSession}
-            onStop={stopSession}
-            onAddManual={() => { setManualDate(undefined); setManualOpen(true); }}
-          />
-          <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} onEdit={handleEditSession} />
-          <TodayPlanCard />
-          <Heatmap
-            sessions={workSessionsOnly(workSessions)}
-            studySessions={workSessions.filter(isStudySession)}
-            now={now}
-            customDayOffs={customDayOffs}
-            onToggleDayOff={handleToggleDayOff}
-            onSetDayOffType={handleSetDayOffType}
-            onAddSession={handleAddSession}
-            onEditSession={handleEditSession}
-            onDeleteSession={handleDeleteSession}
-          />
-          <MonthlyCard sessions={workSessionsOnly(workSessions)} now={now} customDayOffs={customDayOffs} />
+        <main className="mt-8 grid grid-cols-12 gap-5">
+          <div className="col-span-12 space-y-5 lg:col-span-8">
+          <div className="col-span-12 space-y-5 lg:col-span-8">
+            <TimerCard
+              sessions={workSessions}
+              now={now}
+              onStart={() => startSession("work")}
+              onStartStudy={() => startSession("study")}
+              onPause={pauseSession}
+              onResume={resumeSession}
+              onStop={stopSession}
+              onAddManual={() => {
+                setManualDate(undefined);
+                setManualOpen(true);
+              }}
+              activeTaskTitle={activeTaskTitle}
+            />
+            <SessionsPanel sessions={workSessions} now={now} onDelete={handleDeleteSession} onEdit={handleEditSession} />
+            <TodayPlanCard />
+            <Heatmap
+              sessions={workSessionsOnly(workSessions)}
+              studySessions={workSessions.filter(isStudySession)}
+              now={now}
+              customDayOffs={customDayOffs}
+              onToggleDayOff={handleToggleDayOff}
+              onSetDayOffType={handleSetDayOffType}
+              onAddSession={handleAddSession}
+              onEditSession={handleEditSession}
+              onDeleteSession={handleDeleteSession}
+            />
+            <MonthlyCard sessions={workSessionsOnly(workSessions)} now={now} customDayOffs={customDayOffs} />
+          </div>
+
+          <aside className="col-span-12 space-y-5 self-start lg:col-span-4 lg:sticky lg:top-6">
+            <TaskPanel
+              tasks={workTasks}
+              sessions={workSessions}
+              now={now}
+              activeTaskId={activeTaskId}
+              onStartTask={startTaskWithTimer}
+              onDelete={handleDeleteTask}
+            />
+          </div>
+
+          <aside className="col-span-12 space-y-5 self-start lg:col-span-4 lg:sticky lg:top-6">
+            <TaskPanel
+              tasks={workTasks}
+              sessions={workSessions}
+              now={now}
+              activeTaskId={activeTaskId}
+              onStartTask={startTaskWithTimer}
+              onDelete={handleDeleteTask}
+            />
+          </aside>
 
           <section className="col-span-12 grid grid-cols-2 gap-4 sm:grid-cols-6">
             {statCards.map((c, i) => (

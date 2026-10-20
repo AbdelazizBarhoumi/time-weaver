@@ -33,13 +33,15 @@ export function useMonthlyBreakdown(count = 4) {
 export function useCreateSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { start: string; end?: string; note?: string; type?: 'work' | 'study'; paused_ms?: number; paused_at?: string; segments?: Segment[] }) =>
+    mutationFn: (data: { start: string; end?: string; note?: string; type?: 'work' | 'study'; paused_ms?: number; paused_at?: string; segments?: Segment[]; work_task_id?: number | null }) =>
       sessionsApi.create(data).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       queryClient.invalidateQueries({ queryKey: ['sessions', 'today'] });
       queryClient.invalidateQueries({ queryKey: ['sessions', 'stats'] });
       queryClient.invalidateQueries({ queryKey: ['sessions', 'monthly'] });
+      // A linked session changes a task's derived status and tracked time.
+      queryClient.invalidateQueries({ queryKey: ['work-tasks'] });
     },
   });
 }
@@ -47,13 +49,14 @@ export function useCreateSession() {
 export function useUpdateSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ start: string; end: string; note: string; type: 'work' | 'study'; paused_ms: number; paused_at: string | null; segments: Segment[] }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ start: string; end: string; note: string; type: 'work' | 'study'; paused_ms: number; paused_at: string | null; segments: Segment[]; work_task_id: number | null }> }) =>
       sessionsApi.update(id, data).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       queryClient.invalidateQueries({ queryKey: ['sessions', 'today'] });
       queryClient.invalidateQueries({ queryKey: ['sessions', 'stats'] });
       queryClient.invalidateQueries({ queryKey: ['sessions', 'monthly'] });
+      queryClient.invalidateQueries({ queryKey: ['work-tasks'] });
     },
   });
 }

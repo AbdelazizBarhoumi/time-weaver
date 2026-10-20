@@ -18,9 +18,10 @@ interface Props {
   onResume: () => void;
   onStop: () => void;
   onAddManual: () => void;
+  activeTaskTitle?: string | null;
 }
 
-export function TimerCard({ sessions, now, onStart, onStartStudy, onPause, onResume, onStop, onAddManual }: Props) {
+export function TimerCard({ sessions, now, onStart, onStartStudy, onPause, onResume, onStop, onAddManual, activeTaskTitle }: Props) {
   const active = sessions.find((s) => !s.end);
   const isRunning = !!active && !active.pausedAt;
   const isPaused = !!active && !!active.pausedAt;
@@ -79,6 +80,11 @@ export function TimerCard({ sessions, now, onStart, onStartStudy, onPause, onRes
               <div className="mt-1 font-mono text-[10px] tracking-[0.2em] text-mut">
                 {active ? (isStudying ? "STUDY SESSION" : "CURRENT SESSION") : "NO SESSION"}
               </div>
+              {activeTaskTitle && !isStudying && (
+                <div className="mt-2 truncate font-mono text-[10px] uppercase tracking-[0.18em] text-neon">
+                  → {activeTaskTitle}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -50,4 +50,9 @@ class User extends Authenticatable
     {
         return $this->hasMany(SideTask::class);
     }
+
+    public function workTasks(): HasMany
+    {
+        return $this->hasMany(WorkTask::class);
+    }
 }

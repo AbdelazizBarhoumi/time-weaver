@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
 
-#[Fillable(['user_id', 'start', 'end', 'note', 'type', 'source', 'calendar_account_id', 'calendar_event_id', 'paused_ms', 'paused_at', 'segments'])]
+#[Fillable(['user_id', 'start', 'end', 'note', 'type', 'source', 'calendar_account_id', 'calendar_event_id', 'work_task_id', 'paused_ms', 'paused_at', 'segments'])]
 #[Hidden(['pivot'])]
 class WorkSession extends Model
 {
@@ -35,6 +35,12 @@ class WorkSession extends Model
     public function calendarAccount(): BelongsTo
     {
         return $this->belongsTo(CalendarAccount::class);
+    }
+
+    /** The work task this session's time was logged against, if any. */
+    public function workTask(): BelongsTo
+    {
+        return $this->belongsTo(WorkTask::class, 'work_task_id');
     }
 
     protected function isFromCalendar(): Attribute

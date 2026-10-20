@@ -20,6 +20,8 @@ export interface WorkSession {
   type?: "work" | "study";
   /** Where the session came from: a manual timer/entry, or a calendar work event */
   source?: "manual" | "calendar";
+  /** The work task this session's time was logged against, if any */
+  workTaskId?: number | null;
   /** Accumulated paused milliseconds (excluded from duration) */
   pausedMs: number;
   /** ISO timestamp when paused, null while running */

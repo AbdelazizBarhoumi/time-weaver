@@ -9,6 +9,7 @@ use App\Http\Controllers\DayOffController;
 use App\Http\Controllers\FocusBlockController;
 use App\Http\Controllers\SideTaskController;
 use App\Http\Controllers\WorkSessionController;
+use App\Http\Controllers\WorkTaskController;
 use App\Models\WorkSession;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
@@ -65,6 +66,13 @@ Route::middleware('auth:web')->group(function () {
     Route::post('side-tasks/plan', [SideTaskController::class, 'plan']);
     Route::put('side-tasks/{task}', [SideTaskController::class, 'update']);
     Route::delete('side-tasks/{task}', [SideTaskController::class, 'destroy']);
+
+    // Work tasks: the home-page list, with derived status and tracked time
+    Route::get('work-tasks', [WorkTaskController::class, 'index']);
+    Route::post('work-tasks', [WorkTaskController::class, 'store']);
+    Route::post('work-tasks/{task}/start', [WorkTaskController::class, 'start']);
+    Route::put('work-tasks/{task}', [WorkTaskController::class, 'update']);
+    Route::delete('work-tasks/{task}', [WorkTaskController::class, 'destroy']);
 
     // Calendar: day intelligence + optional AI coach
     Route::get('calendar/coach/status', [CalendarInsightController::class, 'status']);

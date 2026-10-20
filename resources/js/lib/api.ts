@@ -42,6 +42,8 @@ export interface ApiWorkSession {
   type?: 'work' | 'study';
   source?: 'manual' | 'calendar';
   calendarEventId?: string | null;
+  /** The work task this session's time was logged against, if any. */
+  workTaskId: number | null;
   pausedMs: number;
   pausedAt: string | null;
   segments: Segment[];
@@ -112,13 +114,13 @@ export const sessionsApi = {
   list: (params?: { from?: string; to?: string; month?: string; per_page?: number }) =>
     api.get<PaginatedResponse<ApiWorkSession>>('/sessions', { params }),
 
-  create: (data: { start: string; end?: string; note?: string; type?: 'work' | 'study'; paused_ms?: number; paused_at?: string; segments?: Segment[] }) =>
+  create: (data: { start: string; end?: string; note?: string; type?: 'work' | 'study'; paused_ms?: number; paused_at?: string; segments?: Segment[]; work_task_id?: number | null }) =>
     api.post<ApiWorkSession>('/sessions', data),
 
   get: (id: number) =>
     api.get<ApiWorkSession>(`/sessions/${id}`),
 
-  update: (id: number, data: Partial<{ start: string; end: string; note: string; type: 'work' | 'study'; paused_ms: number; paused_at: string | null; segments: Segment[] }>) =>
+  update: (id: number, data: Partial<{ start: string; end: string; note: string; type: 'work' | 'study'; paused_ms: number; paused_at: string | null; segments: Segment[]; work_task_id: number | null }>) =>
     api.put<ApiWorkSession>(`/sessions/${id}`, data),
 
   delete: (id: number) =>

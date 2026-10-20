@@ -7,9 +7,11 @@ use App\Http\Resources\StatsResource;
 use App\Http\Resources\WorkSessionResource;
 use App\Models\CalendarSetting;
 use App\Models\WorkSession;
+use App\Models\WorkTask;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class WorkSessionController extends Controller
@@ -46,6 +48,7 @@ class WorkSessionController extends Controller
             'type' => 'sometimes|in:work,study',
             'paused_ms' => 'nullable|integer|min:0',
             'paused_at' => 'nullable|date',
+            'work_task_id' => $this->workTaskRules($request),
             ...$this->segmentRules(),
         ]);
 
@@ -70,7 +73,12 @@ class WorkSessionController extends Controller
             'paused_ms' => $data['paused_ms'] ?? 0,
             'paused_at' => $data['paused_at'] ?? null,
             'segments' => $data['segments'] ?? null,
+            'work_task_id' => $data['work_task_id'] ?? null,
         ]);
+
+        if ($session->work_task_id !== null) {
+            $this->markTaskStarted($session->work_task_id);
+        }
 
         return new WorkSessionResource($session);
     }
@@ -95,6 +103,7 @@ class WorkSessionController extends Controller
             'type' => 'sometimes|in:work,study',
             'paused_ms' => 'sometimes|integer|min:0',
             'paused_at' => 'nullable|date',
+            'work_task_id' => $this->workTaskRules($request),
             ...$this->segmentRules(),
         ]);
 
@@ -112,6 +121,10 @@ class WorkSessionController extends Controller
         }
 
         $session->update($data);
+
+        if ($session->work_task_id !== null) {
+            $this->markTaskStarted($session->work_task_id);
+        }
 
         return new WorkSessionResource($session->refresh());
     }
@@ -325,6 +338,32 @@ class WorkSessionController extends Controller
             'segments.*.start' => 'required|date',
             'segments.*.end' => 'nullable|date',
         ];
+    }
+
+    /**
+     * Only a task the user owns may be linked to their session.
+     *
+     * @return array<int, mixed>
+     */
+    private function workTaskRules(Request $request): array
+    {
+        return [
+            'sometimes',
+            'nullable',
+            'integer',
+            Rule::exists('work_tasks', 'id')->where('user_id', $request->user()->id),
+        ];
+    }
+
+    /** Beginning (or editing) a session against a task marks that task started. */
+    private function markTaskStarted(int $taskId): void
+    {
+        $task = WorkTask::find($taskId);
+
+        if ($task !== null && $task->started_at === null) {
+            $task->started_at = now();
+            $task->save();
+        }
     }
 
     /**

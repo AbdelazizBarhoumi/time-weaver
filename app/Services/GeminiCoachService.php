@@ -238,10 +238,9 @@ class GeminiCoachService
                 continue;
             }
 
-            $prefix = ($item['role'] ?? 'user') === 'assistant' ? 'Coach: ' : 'User: ';
             $input[] = [
                 'type' => 'text',
-                'text' => $prefix.$item['content'],
+                'text' => $item['content'],
             ];
         }
 
