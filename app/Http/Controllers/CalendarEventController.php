@@ -7,14 +7,13 @@ use App\Models\CalendarEvent;
 use App\Models\CalendarEventDismissal;
 use App\Models\CalendarEventOverride;
 use App\Models\CalendarEventTag;
-use App\Models\CalendarSetting;
 use App\Models\User;
+use App\Services\CalendarEventFeed;
 use App\Services\CalendarSyncService;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -25,7 +24,10 @@ class CalendarEventController extends Controller
 
     private const SYNC_MONTHS_FORWARD = 3;
 
-    public function __construct(private CalendarSyncService $sync) {}
+    public function __construct(
+        private CalendarSyncService $sync,
+        private CalendarEventFeed $feed,
+    ) {}
 
     /**
      * Serve the locally cached events for a range, resolving each one's work
@@ -38,69 +40,30 @@ class CalendarEventController extends Controller
             'to' => 'required|date',
         ]);
 
-        $user = $request->user();
         $from = Carbon::parse($data['from']);
         $to = Carbon::parse($data['to']);
-        $keywords = array_map(fn (string $keyword): string => Str::lower($keyword), CalendarSetting::forUser($user)->toApi()['workKeywords']);
 
-        $tags = CalendarEventTag::where('user_id', $user->id)->get()
-            ->keyBy(fn (CalendarEventTag $tag) => $tag->calendar_account_id.'|'.$tag->event_id);
-
-        // Events the user dragged keep their Google times in the cache, so the
-        // override supplies the times we actually render.
-        $overrides = CalendarEventOverride::where('user_id', $user->id)->get()
-            ->keyBy(fn (CalendarEventOverride $override) => $override->calendar_account_id.'|'.$override->event_id);
-
-        // A moved event can leave the window its cached row still sits in, so
-        // also pull in any occurrence whose override lands inside the range.
-        $movedKeys = $overrides
-            ->filter(fn (CalendarEventOverride $override): bool => $override->start < $to && $override->end > $from)
-            ->map(fn (CalendarEventOverride $override): array => [$override->calendar_account_id, $override->event_id])
-            ->values();
-
-        $events = CalendarEvent::with('account')
-            ->where('user_id', $user->id)
-            ->where(function ($query) use ($from, $to, $movedKeys): void {
-                $query->where(function ($query) use ($from, $to): void {
-                    $query->where('start', '<', $to)->where('end', '>', $from);
-                });
-
-                foreach ($movedKeys as [$accountId, $eventId]) {
-                    $query->orWhere(function ($query) use ($accountId, $eventId): void {
-                        $query->where('calendar_account_id', $accountId)->where('event_id', $eventId);
-                    });
-                }
-            })
-            ->orderBy('start')
-            ->get()
-            ->map(function (CalendarEvent $event) use ($tags, $overrides, $keywords): array {
-                $key = $event->calendar_account_id.'|'.$event->event_id;
-                $tag = $tags->get($key);
-                $override = $overrides->get($key);
-                // The times Google sent, unless the user moved this occurrence.
-                $start = $override?->start ?? $event->start;
-                $end = $override?->end ?? $event->end;
-                ['isWork' => $isWork, 'source' => $workSource] = $this->workState($event, $tag, $keywords);
-
+        $events = $this->feed->eventsFor($request->user(), $from, $to)
+            ->map(function (array $event): array {
                 return [
-                    'id' => $key,
-                    'cacheId' => $event->id,
-                    'eventId' => $event->event_id,
-                    'recurringEventId' => $event->recurring_event_id,
-                    'accountId' => $event->calendar_account_id,
-                    'accountEmail' => $event->account?->email ?? $event->account_email,
-                    'accountColor' => $event->account?->color ?? $event->color,
-                    'calendarId' => $event->calendar_id,
-                    'calendarName' => $event->calendar_name,
-                    'title' => $event->title,
+                    'id' => $event['id'],
+                    'cacheId' => $event['cacheId'],
+                    'eventId' => $event['eventId'],
+                    'recurringEventId' => $event['recurringEventId'],
+                    'accountId' => $event['accountId'],
+                    'accountEmail' => $event['accountEmail'],
+                    'accountColor' => $event['accountColor'],
+                    'calendarId' => $event['calendarId'],
+                    'calendarName' => $event['calendarName'],
+                    'title' => $event['title'],
                     // All-day events keep the date-only shape the calendar UI expects.
-                    'start' => $event->all_day ? $start->toDateString() : $start->toISOString(),
-                    'end' => $event->all_day ? $end->toDateString() : $end->toISOString(),
-                    'allDay' => $event->all_day,
-                    'color' => $event->event_color,
-                    'isWork' => $isWork,
-                    'workSource' => $workSource,
-                    'syncedAt' => $event->synced_at?->toISOString(),
+                    'start' => $event['allDay'] ? $event['start']->toDateString() : $event['start']->toISOString(),
+                    'end' => $event['allDay'] ? $event['end']->toDateString() : $event['end']->toISOString(),
+                    'allDay' => $event['allDay'],
+                    'color' => $event['color'],
+                    'isWork' => $event['isWork'],
+                    'workSource' => $event['workSource'],
+                    'syncedAt' => $event['syncedAt']?->toISOString(),
                 ];
             })
             ->values();
@@ -406,44 +369,5 @@ class CalendarEventController extends Controller
                 'calendar_event_id' => $eventId,
             ]);
         }
-    }
-
-    /**
-     * Resolve whether an event counts as work and where that came from: a manual
-     * tag wins over the keyword rules, which win over a default-work mailbox.
-     *
-     * @param  array<int, string>  $keywords
-     * @return array{isWork: bool, source: ?string}
-     */
-    private function workState(CalendarEvent $event, ?CalendarEventTag $tag, array $keywords): array
-    {
-        $matchesRule = ! $event->all_day && $this->matchesKeyword($event->title, $keywords);
-        // A mailbox flagged as default-work counts every timed event as work.
-        $defaultWork = ! $event->all_day && (bool) $event->account?->default_work;
-
-        if ($tag) {
-            return ['isWork' => (bool) $tag->is_work, 'source' => 'manual'];
-        }
-
-        return [
-            'isWork' => $matchesRule || $defaultWork,
-            'source' => $matchesRule ? 'rule' : ($defaultWork ? 'account' : null),
-        ];
-    }
-
-    /**
-     * @param  array<int, string>  $keywords
-     */
-    private function matchesKeyword(string $title, array $keywords): bool
-    {
-        $lower = Str::lower($title);
-
-        foreach ($keywords as $keyword) {
-            if ($keyword !== '' && Str::contains($lower, $keyword)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

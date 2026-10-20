@@ -569,6 +569,9 @@ function CalendarPage() {
         <Link to="/" className="font-mono text-sm text-mut hover:text-neon">
           ← ShiftGrid
         </Link>
+        <Link to="/reports" className="font-mono text-sm text-mut hover:text-neon">
+          Reports
+        </Link>
         <h1 className="text-lg font-semibold">{title}</h1>
         <span className="hidden items-center gap-2 font-mono text-xs text-mut sm:flex">
           <span className="inline-block h-2 w-2 rounded-full bg-neon" />

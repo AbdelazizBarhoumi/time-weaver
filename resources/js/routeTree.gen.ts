@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as DayDateKeyRouteImport } from './routes/day.$dateKey'
 
 const IndexRoute = IndexRouteImport.update({
@@ -29,6 +30,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReportsRoute = ReportsRouteImport.update({
+  id: '/reports',
+  path: '/reports',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DayDateKeyRoute = DayDateKeyRouteImport.update({
   id: '/day/$dateKey',
   path: '/day/$dateKey',
@@ -39,12 +45,14 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/calendar': typeof CalendarRoute
   '/login': typeof LoginRoute
+  '/reports': typeof ReportsRoute
   '/day/$dateKey': typeof DayDateKeyRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/calendar': typeof CalendarRoute
   '/login': typeof LoginRoute
+  '/reports': typeof ReportsRoute
   '/day/$dateKey': typeof DayDateKeyRoute
 }
 export interface FileRoutesById {
@@ -52,20 +60,22 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/calendar': typeof CalendarRoute
   '/login': typeof LoginRoute
+  '/reports': typeof ReportsRoute
   '/day/$dateKey': typeof DayDateKeyRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/calendar' | '/login' | '/day/$dateKey'
+  fullPaths: '/' | '/calendar' | '/login' | '/reports' | '/day/$dateKey'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/calendar' | '/login' | '/day/$dateKey'
-  id: '__root__' | '/' | '/calendar' | '/login' | '/day/$dateKey'
+  to: '/' | '/calendar' | '/login' | '/reports' | '/day/$dateKey'
+  id: '__root__' | '/' | '/calendar' | '/login' | '/reports' | '/day/$dateKey'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CalendarRoute: typeof CalendarRoute
   LoginRoute: typeof LoginRoute
+  ReportsRoute: typeof ReportsRoute
   DayDateKeyRoute: typeof DayDateKeyRoute
 }
 
@@ -92,6 +102,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/reports': {
+      id: '/reports'
+      path: '/reports'
+      fullPath: '/reports'
+      preLoaderRoute: typeof ReportsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/day/$dateKey': {
       id: '/day/$dateKey'
       path: '/day/$dateKey'
@@ -106,6 +123,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CalendarRoute: CalendarRoute,
   LoginRoute: LoginRoute,
+  ReportsRoute: ReportsRoute,
   DayDateKeyRoute: DayDateKeyRoute,
 }
 export const routeTree = rootRouteImport

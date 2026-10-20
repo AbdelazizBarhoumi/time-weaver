@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
@@ -54,5 +55,20 @@ class User extends Authenticatable
     public function workTasks(): HasMany
     {
         return $this->hasMany(WorkTask::class);
+    }
+
+    public function reportSetting(): HasOne
+    {
+        return $this->hasOne(ReportSetting::class);
+    }
+
+    public function reportPresets(): HasMany
+    {
+        return $this->hasMany(ReportPreset::class);
+    }
+
+    public function reports(): HasMany
+    {
+        return $this->hasMany(Report::class)->orderByDesc('generated_at');
     }
 }

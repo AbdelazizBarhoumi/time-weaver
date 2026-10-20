@@ -22,7 +22,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const isLoginPage = location.pathname === '/login';
   
-  const { data: user, isLoading, refetch } = useUser({
+  const { data: user = null, isLoading, refetch } = useUser({
     enabled: !isLoginPage,
   });
   const loginMutation = useLogin();

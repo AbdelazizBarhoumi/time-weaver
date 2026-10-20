@@ -5,12 +5,7 @@ import { createRouter } from "@tanstack/react-router";
 import { ConfirmProvider } from "@/components/ConfirmDialog";
 import { routeTree } from "@/routeTree.gen";
 
-interface TestContext {
-    queryClient: QueryClient;
-    router: ReturnType<typeof createRouter>;
-}
-
-function createTestContext(): TestContext {
+function createTestContext() {
     const queryClient = new QueryClient({
         defaultOptions: {
             queries: {
@@ -28,9 +23,11 @@ function createTestContext(): TestContext {
     return { queryClient, router };
 }
 
+type TestContext = ReturnType<typeof createTestContext>;
+
 interface WrapperOptions {
     queryClient?: QueryClient;
-    router?: ReturnType<typeof createRouter>;
+    router?: TestContext["router"];
     children: React.ReactNode;
 }
 

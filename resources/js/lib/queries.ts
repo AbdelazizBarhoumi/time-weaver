@@ -119,9 +119,10 @@ export function useLogout() {
   });
 }
 
-export function useUser() {
+export function useUser(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['user'],
+    ...(options.enabled !== undefined ? { enabled: options.enabled } : {}),
     queryFn: async () => {
       try {
         const res = await authApi.user();

@@ -268,7 +268,7 @@ function Index() {
 
   return (
     <div className="min-h-screen bg-void grid-bg font-display text-ink">
-      <div className="mx-auto max-w-6xl px-6 py-10">
+      <div className="mx-auto max-w-7xl px-6 py-10">
         <header className="flex items-center justify-between animate-rise">
           <div className="flex items-center gap-3">
             <div className="grid size-9 place-items-center rounded-[10px] bg-neon/10 ring-1 ring-neon/40">
@@ -280,6 +280,12 @@ function Index() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to="/reports"
+              className="rounded-lg bg-panel px-3 py-2 font-mono text-xs text-mut ring-1 ring-line transition-colors hover:text-neon"
+            >
+              ▤ Reports
+            </Link>
             <Link
               to="/calendar"
               className="rounded-lg bg-panel px-3 py-2 font-mono text-xs text-mut ring-1 ring-line transition-colors hover:text-neon"
@@ -296,7 +302,6 @@ function Index() {
         </header>
 
         <main className="mt-8 grid grid-cols-12 gap-5">
-          <div className="col-span-12 space-y-5 lg:col-span-8">
           <div className="col-span-12 space-y-5 lg:col-span-8">
             <TimerCard
               sessions={workSessions}
@@ -326,17 +331,6 @@ function Index() {
               onDeleteSession={handleDeleteSession}
             />
             <MonthlyCard sessions={workSessionsOnly(workSessions)} now={now} customDayOffs={customDayOffs} />
-          </div>
-
-          <aside className="col-span-12 space-y-5 self-start lg:col-span-4 lg:sticky lg:top-6">
-            <TaskPanel
-              tasks={workTasks}
-              sessions={workSessions}
-              now={now}
-              activeTaskId={activeTaskId}
-              onStartTask={startTaskWithTimer}
-              onDelete={handleDeleteTask}
-            />
           </div>
 
           <aside className="col-span-12 space-y-5 self-start lg:col-span-4 lg:sticky lg:top-6">

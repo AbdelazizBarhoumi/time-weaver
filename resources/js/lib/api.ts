@@ -1,7 +1,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import type { Segment } from './tracker';
 
-const API_BASE_URL = import.meta.env['VITE_API_URL'] || '/api';
+export const API_BASE_URL = import.meta.env['VITE_API_URL'] || '/api';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
@@ -152,6 +152,12 @@ export const dayOffsApi = {
 };
 
 // Auth API
+export interface ApiUser {
+  id: number;
+  name: string;
+  email: string;
+}
+
 export const authApi = {
   login: (email: string, password: string, remember = false) =>
     api.post('/login', { email, password, remember }),
@@ -163,5 +169,5 @@ export const authApi = {
     api.post('/logout'),
 
   user: () =>
-    api.get('/user'),
+    api.get<{ user: ApiUser | null }>('/user'),
 };

@@ -7,6 +7,9 @@ use App\Http\Controllers\CalendarInsightController;
 use App\Http\Controllers\CalendarSettingsController;
 use App\Http\Controllers\DayOffController;
 use App\Http\Controllers\FocusBlockController;
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\ReportPresetController;
+use App\Http\Controllers\ReportSettingController;
 use App\Http\Controllers\SideTaskController;
 use App\Http\Controllers\WorkSessionController;
 use App\Http\Controllers\WorkTaskController;
@@ -78,6 +81,23 @@ Route::middleware('auth:web')->group(function () {
     Route::get('calendar/coach/status', [CalendarInsightController::class, 'status']);
     Route::post('calendar/coach', [CalendarInsightController::class, 'coach']);
     Route::post('calendar/coach/chat', [CalendarInsightController::class, 'chat']);
+
+    // Reports: preview, saved PDFs, presets, and branding
+    Route::get('reports/source-data', [ReportController::class, 'sourceData']);
+    Route::post('reports/preview', [ReportController::class, 'preview']);
+    Route::get('reports', [ReportController::class, 'index'])->name('reports.index');
+    Route::post('reports', [ReportController::class, 'store'])->name('reports.store');
+    Route::get('reports/{report}/download', [ReportController::class, 'download'])->whereNumber('report')->name('reports.download');
+    Route::delete('reports/{report}', [ReportController::class, 'destroy'])->whereNumber('report')->name('reports.destroy');
+
+    Route::get('report-presets', [ReportPresetController::class, 'index'])->name('report-presets.index');
+    Route::post('report-presets', [ReportPresetController::class, 'store'])->name('report-presets.store');
+    Route::put('report-presets/{preset}', [ReportPresetController::class, 'update'])->whereNumber('preset')->name('report-presets.update');
+    Route::delete('report-presets/{preset}', [ReportPresetController::class, 'destroy'])->whereNumber('preset')->name('report-presets.destroy');
+
+    Route::get('report-settings', [ReportSettingController::class, 'show'])->name('report-settings.show');
+    Route::put('report-settings', [ReportSettingController::class, 'update'])->name('report-settings.update');
+    Route::post('report-settings', [ReportSettingController::class, 'update'])->name('report-settings.store');
 
     // Debug route
     Route::get('/debug-policy', function () {
