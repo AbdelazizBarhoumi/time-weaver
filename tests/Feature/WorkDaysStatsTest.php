@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\CalendarSetting;
 use App\Models\User;
+use App\Models\UserDayOff;
+use App\Models\WorkSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
@@ -74,5 +76,51 @@ class WorkDaysStatsTest extends TestCase
         $response = $this->getJson('/api/sessions/monthly?count=1')->assertStatus(200);
 
         $this->assertSame($this->countWeekdaysInCurrentMonth([1, 2, 3, 4, 5]) * 8, $response->json('0.targetHours'));
+    }
+
+    public function test_monthly_breakdown_drops_excluded_days_and_reports_them(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-07 17:00:00')); // Wednesday
+
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        UserDayOff::create([
+            'user_id' => $user->id,
+            'date' => '2026-10-06', // Tuesday off
+            'type' => 'excluded',
+        ]);
+
+        WorkSession::factory()->create([
+            'user_id' => $user->id,
+            'start' => Carbon::parse('2026-10-06 09:00:00'),
+            'end' => Carbon::parse('2026-10-06 17:00:00'),
+            'type' => 'work',
+            'paused_ms' => 0,
+        ]);
+
+        $response = $this->getJson('/api/sessions/monthly?count=1')->assertStatus(200);
+
+        // 22 October weekdays minus the excluded Tuesday → 21 × 8h target.
+        $this->assertSame(21 * 8, $response->json('0.targetHours'));
+        // Hours logged on an excluded day never count toward the month.
+        $this->assertEquals(0, $response->json('0.doneHours'));
+        $this->assertSame(1, $response->json('0.customDaysOff'));
+    }
+
+    public function test_monthly_breakdown_covers_the_current_month_and_the_eleven_before_it(): void
+    {
+        $this->travelTo(Carbon::parse('2026-10-07 17:00:00')); // Wednesday
+
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $rows = $this->getJson('/api/sessions/monthly?count=12')->assertStatus(200)->json();
+
+        $this->assertCount(12, $rows);
+        $this->assertSame('2025-11', $rows[0]['key']);
+        $this->assertSame('2026-10', $rows[11]['key']);
+        $this->assertTrue($rows[11]['isCurrent']);
+        $this->assertSame(1, collect($rows)->where('isCurrent', true)->count());
     }
 }

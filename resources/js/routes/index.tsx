@@ -84,10 +84,14 @@ function Index() {
   const [editSession, setEditSession] = useState<WorkSession | null>(null);
   const [editOpen, setEditOpen] = useState(false);
 
-  const { data: sessions = [], isLoading, error } = useSessions();
+  // The heatmap renders 52 weeks and the panel/backlog read the same list. The
+  // API's default page (50) silently dropped older sessions, so ask for enough
+  // rows to cover the whole year instead of the newest page only.
+  const { data: sessions = [], isLoading, error } = useSessions({ per_page: 1000 });
   const { data: todaySessionsData = [] } = useTodaySessions();
   const { data: stats } = useStats();
-  const { data: monthlyBreakdown = [] } = useMonthlyBreakdown();
+  // Current month plus the 11 before it, so the card always shows a full year.
+  const { data: monthStats = [] } = useMonthlyBreakdown(12);
   const { data: dayOffs = [] } = useDayOffs();
   const { data: workTasks = [] } = useWorkTasks();
 
@@ -330,7 +334,7 @@ function Index() {
               onEditSession={handleEditSession}
               onDeleteSession={handleDeleteSession}
             />
-            <MonthlyCard sessions={workSessionsOnly(workSessions)} now={now} customDayOffs={customDayOffs} />
+            <MonthlyCard months={monthStats} />
           </div>
 
           <aside className="col-span-12 space-y-5 self-start lg:col-span-4 lg:sticky lg:top-6">

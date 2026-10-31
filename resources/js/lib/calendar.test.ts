@@ -872,6 +872,7 @@ describe("buildCoachContext", () => {
     paceDeltaHours: -4,
     progress: 0.34,
     isCurrent: true,
+    customDaysOff: 0,
   };
 
   it("carries today's facts and the local now", () => {

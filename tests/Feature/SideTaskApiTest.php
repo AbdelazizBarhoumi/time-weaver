@@ -238,6 +238,10 @@ class SideTaskApiTest extends TestCase
 
     public function test_moving_a_completed_task_makes_it_live_again(): void
     {
+        // Freeze before the new slot so the move itself doesn't land in the past
+        // (a slot that already passed counts as done again).
+        Carbon::setTestNow('2026-10-25T08:00:00Z');
+
         $task = SideTask::factory()->for($this->user)->scheduled()->done()->create();
 
         $this->putJson("/api/side-tasks/{$task->id}", ['start' => '2026-10-25T09:00:00.000000Z'])

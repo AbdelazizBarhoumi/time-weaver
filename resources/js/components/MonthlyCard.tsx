@@ -1,6 +1,7 @@
-import { formatHM, monthlyBreakdown, type CustomDayOff, type MonthStats, type WorkSession } from "@/lib/tracker";
+import { formatHM } from "@/lib/tracker";
+import type { ApiMonthStats } from "@/lib/api";
 
-function MonthRow({ m }: { m: MonthStats }) {
+function MonthRow({ m }: { m: ApiMonthStats }) {
   const over = m.paceDeltaHours >= 0;
   const pct = Math.round(m.progress * 100);
   // Use abbreviated month name on small screens
@@ -8,8 +9,9 @@ function MonthRow({ m }: { m: MonthStats }) {
   return (
     <div className="py-2.5">
       <div className="flex items-baseline justify-between">
-        <div className="font-mono text-xs text-ink truncate max-w-[120px] sm:max-w-none">
-          {m.label}
+        <div className="font-mono text-xs text-ink truncate max-w-[120px] sm:max-w-none" title={m.label}>
+          <span className="hidden sm:inline">{m.label}</span>
+          <span className="sm:hidden">{shortLabel}</span>
         </div>
         <div className="font-mono text-xs">
           <span className="text-ink">{m.doneHours.toFixed(1)}h</span>
@@ -41,9 +43,20 @@ function MonthRow({ m }: { m: MonthStats }) {
   );
 }
 
-export function MonthlyCard({ sessions, now, customDayOffs }: { sessions: WorkSession[]; now: number; customDayOffs: CustomDayOff[] }) {
-  const current = monthlyBreakdown(sessions, now, 1, customDayOffs)[0]!;
-  const months = monthlyBreakdown(sessions, now, 4, customDayOffs);
+/**
+ * Monthly progress card.
+ *
+ * Numbers come from the server (`GET /sessions/monthly`), which reads every work
+ * session and the user's configured required days. Computing this from the
+ * paginated session list undercounted the month — older sessions fell off page
+ * one and simply disappeared from the totals.
+ */
+export function MonthlyCard({ months }: { months: ApiMonthStats[] }) {
+  const current = months.find((m) => m.isCurrent) ?? months[months.length - 1];
+  if (!current) {
+    return null;
+  }
+
   const deg = Math.round(current.progress * 360);
 
   const statusLine = (() => {
@@ -66,7 +79,7 @@ export function MonthlyCard({ sessions, now, customDayOffs }: { sessions: WorkSe
           <div className="grid size-24 place-items-center rounded-full bg-panel text-center">
             <div>
               <div className="font-mono text-2xl font-bold tabular-nums text-ink">{Math.round(current.progress * 100)}%</div>
-              <div className="font-mono text-[9px] tracking-[0.2em] text-mut">OF MONTH</div>
+              <div className="font-mono text-[9px] tracking-[0.2em] text-mut">OF TARGET</div>
             </div>
           </div>
         </div>
@@ -114,10 +127,15 @@ export function MonthlyCard({ sessions, now, customDayOffs }: { sessions: WorkSe
         </div>
 
         {/* history */}
-        <div className="divide-y divide-line lg:border-l lg:border-line lg:pl-6">
-          {months.map((m) => (
-            <MonthRow key={m.key} m={m} />
-          ))}
+        <div className="lg:border-l lg:border-line lg:pl-6">
+          <div className="font-mono text-[10px] tracking-[0.2em] text-mut">
+            HISTORY · {months.length} MONTH{months.length === 1 ? "" : "S"}
+          </div>
+          <div className="mt-2 max-h-[320px] divide-y divide-line overflow-y-auto pr-1">
+            {months.map((m) => (
+              <MonthRow key={m.key} m={m} />
+            ))}
+          </div>
         </div>
       </div>
     </section>

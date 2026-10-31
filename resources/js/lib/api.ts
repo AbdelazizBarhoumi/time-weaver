@@ -82,6 +82,8 @@ export interface ApiMonthStats {
   paceDeltaHours: number;
   progress: number;
   isCurrent: boolean;
+  /** Count of custom days off in this month (both excluded and included). */
+  customDaysOff: number;
 }
 
 export interface ApiDayOff {

@@ -311,9 +311,10 @@ class WorkSessionController extends Controller
         $requiredDays = CalendarSetting::forUser($request->user())->requiredDays();
         $now = now();
         $results = [];
+        $base = $now->copy()->startOfMonth();
 
         for ($i = $count - 1; $i >= 0; $i--) {
-            $d = Carbon::createFromDate($now->year, $now->month - $i, 1);
+            $d = $base->copy()->subMonthsNoOverflow($i);
             $results[] = $this->buildMonthStats($sessions, $dayOffs, $d->year, $d->month, $now, $requiredDays);
         }
 

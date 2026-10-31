@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\EncryptedString;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -18,8 +19,8 @@ class CalendarAccount extends Model
     protected function casts(): array
     {
         return [
-            'access_token' => 'encrypted',
-            'refresh_token' => 'encrypted',
+            'access_token' => EncryptedString::class,
+            'refresh_token' => EncryptedString::class,
             'default_work' => 'boolean',
             'expires_at' => 'datetime',
             'last_synced_at' => 'datetime',

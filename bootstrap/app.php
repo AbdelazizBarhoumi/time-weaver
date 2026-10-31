@@ -8,7 +8,19 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Env;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+
+/*
+ * On threaded Apache (ZTS), every worker process serves many requests at once
+ * and its threads share a single OS-level environment. putenv() writes there,
+ * so concurrent requests can overwrite or remove each other's APP_* values
+ * mid-boot. Disable putenv() there so dotenv only writes per-request
+ * superglobals ($_SERVER / $_ENV).
+ */
+if (PHP_ZTS && PHP_SAPI === 'apache2handler') {
+    Env::disablePutenv();
+}
 
 $basePath = dirname(__DIR__);
 

@@ -20,6 +20,7 @@ class MonthStatsResource extends JsonResource
             'paceDeltaHours' => $this['paceDeltaHours'],
             'progress' => $this['progress'],
             'isCurrent' => $this['isCurrent'],
+            'customDaysOff' => $this['customDaysOff'],
         ];
     }
 }

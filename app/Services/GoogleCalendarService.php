@@ -67,7 +67,7 @@ class GoogleCalendarService
 
     public function accessToken(CalendarAccount $account): string
     {
-        if ($account->expires_at && $account->expires_at->isAfter(now()->addMinute())) {
+        if ($account->access_token && $account->expires_at?->isAfter(now()->addMinute())) {
             return $account->access_token;
         }
 
