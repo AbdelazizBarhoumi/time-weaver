@@ -37,9 +37,13 @@ class CalendarEventFeed
             ->keyBy(fn (CalendarEventOverride $override) => $override->calendar_account_id.'|'.$override->event_id);
 
         // A moved event can leave the window its cached row still sits in, so
-        // also pull in any occurrence whose override lands inside the range.
+        // also pull in any occurrence whose override lands inside the range. A
+        // color-only override has no times, so it never widens the window.
         $movedKeys = $overrides
-            ->filter(fn (CalendarEventOverride $override): bool => $override->start < $to && $override->end > $from)
+            ->filter(fn (CalendarEventOverride $override): bool => $override->start !== null
+                && $override->end !== null
+                && $override->start < $to
+                && $override->end > $from)
             ->map(fn (CalendarEventOverride $override): array => [$override->calendar_account_id, $override->event_id])
             ->values();
 
@@ -78,7 +82,9 @@ class CalendarEventFeed
                     'start' => $override?->start ?? $event->start,
                     'end' => $override?->end ?? $event->end,
                     'allDay' => $event->all_day,
-                    'color' => $event->event_color,
+                    'color' => $override?->color ?? $event->event_color,
+                    'hasCustomColor' => $override?->color !== null,
+                    'isLocal' => $event->is_local,
                     'isWork' => $isWork,
                     'workSource' => $workSource,
                     'syncedAt' => $event->synced_at,

@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import { cn } from "@/lib/utils";
 import {
   dayInterval,
+  eventAccent,
+  eventBackground,
   isWorkDay,
   monthGrid,
   sameDay,
@@ -157,7 +159,11 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
                   <span
                     key={e.id}
                     className={cn("truncate rounded px-1 py-0.5 text-[10px]", e.isWork ? "text-neon" : "text-ink")}
-                    style={{ background: e.isWork ? "var(--l2)" : `${e.accountColor}2e`, borderLeft: `2px solid ${e.isWork ? "var(--neon)" : e.accountColor}` }}
+                    style={{
+                      // A color the user picked wins over the neutral work fill.
+                      background: e.hasCustomColor || !e.isWork ? eventBackground(e) : "var(--l2)",
+                      borderLeft: `2px solid ${e.hasCustomColor || !e.isWork ? eventAccent(e) : "var(--neon)"}`,
+                    }}
                   >
                     {!e.allDay && <span className="mr-1 font-mono text-mut">{formatTime(e.start)}</span>}
                     {e.title}

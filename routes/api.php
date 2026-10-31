@@ -51,6 +51,7 @@ Route::middleware('auth:web')->group(function () {
     Route::post('calendar/sync', [CalendarEventController::class, 'sync']);
     Route::put('calendar/events/{event}', [CalendarEventController::class, 'update']);
     Route::delete('calendar/events/{event}', [CalendarEventController::class, 'destroy']);
+    Route::post('calendar/events/{event}/duplicate', [CalendarEventController::class, 'duplicate']);
     Route::post('calendar/events/tag', [CalendarEventController::class, 'tag']);
 
     // Calendar: work-hours settings

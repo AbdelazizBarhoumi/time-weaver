@@ -8,7 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Briefcase, CalendarClock, CalendarOff, Check, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Ban, Briefcase, CalendarClock, CalendarOff, Check, Copy, MoreHorizontal, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,12 +18,16 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  EVENT_COLORS,
   SIDE_TASK_DRAG_TYPE,
   addDays,
+  eventAccent,
+  eventBackground,
   eventInterval,
   hhmmToMinutes,
   isSideTaskDone,
@@ -70,6 +74,10 @@ interface Props {
   onToggleWork: (e: CalendarEvent) => void;
   onResetWork: (e: CalendarEvent) => void;
   onDeleteEvent: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
+  /** Copy an event onto another day; the copy stays local to Time Weaver. */
+  onDuplicateEvent: (e: CalendarEvent) => void;
+  /** Override an event's color; null restores the automatic one. */
+  onSetEventColor: (e: CalendarEvent, color: string | null) => void;
   onCreateFocus: (start: Date, end: Date) => void;
   onDeleteFocus: (b: FocusBlock) => void;
   onStartFocus: (b: FocusBlock) => void;
@@ -180,7 +188,7 @@ export function CalendarView(props: Props) {
             {tz.split("/").pop()}
           </div>
           {Array.from({ length: dayCount }, (_, i) => addDays(firstDay, i)).map((d) => (
-            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} onDeleteEvent={props.onDeleteEvent} drag={drag} />
+            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} onDeleteEvent={props.onDeleteEvent} onDuplicateEvent={props.onDuplicateEvent} onSetEventColor={props.onSetEventColor} drag={drag} />
           ))}
         </div>
 
@@ -263,30 +271,39 @@ export function CalendarView(props: Props) {
 }
 
 /**
- * Trash control for a cached event. The menu separates a normal delete (which a
- * later sync can undo) from a permanent one (which it cannot), and — for a
- * recurring event — offers the same choice for the whole series.
+ * The event's "…" menu: duplicate it, recolor it, or delete it. The delete
+ * section separates a normal delete (which a later sync can undo) from a
+ * permanent one (which it cannot), and — for a recurring event — offers the
+ * same choice for the whole series.
  */
-function DeleteEventButton({
+function EventActionsMenu({
   event,
+  onDuplicate,
+  onSetColor,
   onDelete,
   className,
   iconClassName = "h-3 w-3",
 }: {
   event: CalendarEvent;
+  onDuplicate: (e: CalendarEvent) => void;
+  onSetColor: (e: CalendarEvent, color: string | null) => void;
   onDelete: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
   className?: string;
   iconClassName?: string;
 }) {
   const series = event.recurringEventId !== null;
+  // Controlled so picking a color closes the menu like every other action.
+  const [open, setOpen] = useState(false);
+  // Only a color the user picked is "selected"; Google's own color is not one of ours.
+  const current = event.hasCustomColor ? event.color?.toLowerCase() ?? null : null;
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           className={className}
-          title={series ? "Delete this event or the whole series" : "Delete this event"}
+          title="Event actions"
           // The block around us treats a click/Enter as "toggle work", so nothing that
           // belongs to this control may reach it. `DropdownMenuContent` guards its own
           // events (see `menu-guards.ts`); the trigger needs the same treatment.
@@ -295,16 +312,57 @@ function DeleteEventButton({
           onKeyDown={(ev) => ev.stopPropagation()}
           onContextMenu={(ev) => ev.stopPropagation()}
         >
-          <Trash2 className={iconClassName} />
+          <MoreHorizontal className={iconClassName} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="w-60"
+        className="w-56"
         // Selecting an item always opens the confirm dialog, which then owns focus.
         // Without this the menu grabs focus back to its (now hidden) trigger.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
+        <DropdownMenuItem onSelect={() => onDuplicate(event)}>
+          <Copy className="h-3 w-3" /> Duplicate
+        </DropdownMenuItem>
+        <DropdownMenuLabel className="pb-1 pt-2 text-[10px] font-mono uppercase tracking-widest text-mut">
+          Color
+        </DropdownMenuLabel>
+        <div className="flex flex-wrap items-center gap-1 px-2 pb-1">
+          <button
+            type="button"
+            title="Automatic color"
+            aria-label="Automatic color"
+            onClick={() => {
+              onSetColor(event, null);
+              setOpen(false);
+            }}
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-full border border-line text-mut hover:text-ink",
+              current === null && "ring-2 ring-neon ring-offset-1 ring-offset-popover",
+            )}
+          >
+            <Ban className="h-3 w-3" />
+          </button>
+          {EVENT_COLORS.map((color) => (
+            <button
+              key={color.value}
+              type="button"
+              title={color.name}
+              aria-label={color.name}
+              onClick={() => {
+                onSetColor(event, color.value);
+                setOpen(false);
+              }}
+              className={cn(
+                "h-5 w-5 rounded-full ring-1 ring-inset ring-black/30 transition hover:scale-110",
+                current === color.value && "ring-2 ring-ink ring-offset-1 ring-offset-popover",
+              )}
+              style={{ background: color.value }}
+            />
+          ))}
+        </div>
+        <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => onDelete(event, "this", false)}>Delete this event</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onDelete(event, "this", true)}>Delete this event permanently</DropdownMenuItem>
         {series && (
@@ -355,6 +413,8 @@ function DayHeader({
   settings,
   events,
   onDeleteEvent,
+  onDuplicateEvent,
+  onSetEventColor,
   drag,
 }: {
   day: Date;
@@ -362,6 +422,8 @@ function DayHeader({
   settings: CalendarSettings;
   events: CalendarEvent[];
   onDeleteEvent: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
+  onDuplicateEvent: (e: CalendarEvent) => void;
+  onSetEventColor: (e: CalendarEvent, color: string | null) => void;
   drag: DragControls;
 }) {
   const isToday = sameDay(day, new Date(now));
@@ -419,14 +481,16 @@ function DayHeader({
             "group relative mt-1 flex cursor-grab touch-none items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink",
             drag.active?.entity.key === e.id && drag.active.entity.allDay && "opacity-40",
           )}
-          style={{ background: `${e.accountColor}33`, borderLeft: `3px solid ${e.accountColor}` }}
+          style={{ background: eventBackground(e, "33"), borderLeft: `3px solid ${eventAccent(e)}` }}
           title={`${e.title} · ${e.accountEmail} · Drag to another day`}
         >
           <span className="truncate">{e.title}</span>
-          <DeleteEventButton
+          <EventActionsMenu
             event={e}
+            onDuplicate={onDuplicateEvent}
+            onSetColor={onSetEventColor}
             onDelete={onDeleteEvent}
-            className="ml-auto shrink-0 rounded p-0.5 text-mut/60 hover:text-destructive"
+            className="ml-auto shrink-0 rounded p-0.5 text-mut/60 hover:text-ink"
           />
         </div>
       ))}
@@ -849,9 +913,9 @@ function DayColumn(
               ev.preventDefault();
               props.onResetWork(e);
             }}
-            title={`${e.title}\n${e.accountEmail}${e.calendarName ? ` · ${e.calendarName}` : ""}\nDrag to reschedule · Click: ${
-              e.isWork ? "not work" : "mark as work"
-            } · Right-click: back to automatic`}
+            title={`${e.title}\n${e.accountEmail}${e.calendarName ? ` · ${e.calendarName}` : ""}${
+              e.isLocal ? "\nCopied event — saved here only, not in Google" : ""
+            }\nDrag to reschedule · Click: ${e.isWork ? "not work" : "mark as work"} · Right-click: back to automatic`}
             className={cn(
               "group absolute cursor-grab touch-none overflow-hidden rounded px-1.5 py-1 text-left text-[11px] text-ink transition hover:brightness-125",
               e.isWork ? "ring-1 ring-neon" : "opacity-90",
@@ -859,8 +923,10 @@ function DayColumn(
             )}
             style={{
               ...style,
-              background: e.isWork ? "var(--l2)" : `${e.accountColor}2e`,
-              borderLeft: `3px solid ${e.isWork ? "var(--neon)" : e.accountColor}`,
+              // A color the user picked wins over the neutral work fill; the ring
+              // and briefcase still mark the event as work.
+              background: e.hasCustomColor || !e.isWork ? eventBackground(e) : "var(--l2)",
+              borderLeft: `3px solid ${e.hasCustomColor || !e.isWork ? eventAccent(e) : "var(--neon)"}`,
             }}
           >
             <div className="flex items-center gap-1 font-medium">
@@ -871,11 +937,14 @@ function DayColumn(
               {formatTime(e.start)}–{formatTime(e.end)}
               {e.workSource === "rule" && " · auto"}
               {e.workSource === "account" && " · mailbox"}
+              {e.isLocal && " · copy"}
             </div>
-            <DeleteEventButton
+            <EventActionsMenu
               event={e}
+              onDuplicate={props.onDuplicateEvent}
+              onSetColor={props.onSetEventColor}
               onDelete={props.onDeleteEvent}
-              className="absolute right-0.5 top-0.5 rounded bg-panel/80 p-0.5 text-mut/60 hover:text-destructive"
+              className="absolute right-0.5 top-0.5 rounded bg-panel/80 p-0.5 text-mut/60 hover:text-ink"
             />
             <ResizeHandles entity={entity} onResize={beginBlockResize} />
           </div>

@@ -61,10 +61,44 @@ export interface CalendarEvent {
   start: string;
   end: string;
   allDay: boolean;
+  /** The user's color for this occurrence, else Google's; null falls back to the mailbox color. */
+  color: string | null;
+  /** True when `color` is the user's own pick rather than Google's calendar color. */
+  hasCustomColor: boolean;
+  /** True for an event that exists only here (a duplicate), not in Google. */
+  isLocal: boolean;
   isWork: boolean;
   workSource: "manual" | "rule" | "account" | null;
   /** ISO timestamp of the last sync that stored this event. */
   syncedAt?: string | null;
+}
+
+/**
+ * Colors offered in the event menu. Google reports each calendar's color as a
+ * plain hex string, so a local override is stored the same way.
+ */
+export const EVENT_COLORS = [
+  { name: "Blue", value: "#5b9cff" },
+  { name: "Violet", value: "#a78bfa" },
+  { name: "Pink", value: "#f472b6" },
+  { name: "Red", value: "#f87171" },
+  { name: "Amber", value: "#fcd34d" },
+  { name: "Green", value: "#34d399" },
+  { name: "Teal", value: "#22d3ee" },
+  { name: "Slate", value: "#94a3b8" },
+] as const;
+
+/** The strong color of an event: the user's own pick, else its mailbox's. */
+export function eventAccent(event: CalendarEvent): string {
+  return event.hasCustomColor && event.color !== null ? event.color : event.accountColor;
+}
+
+/**
+ * The translucent fill behind an event block or chip. The alpha is a hex pair
+ * so it can be appended to the accent without parsing it.
+ */
+export function eventBackground(event: CalendarEvent, alpha = "2e"): string {
+  return `${eventAccent(event)}${alpha}`;
 }
 
 /** A tracked work session, rendered onto the calendar grid. */
@@ -233,6 +267,14 @@ export const calendarApi = {
       .then((r) => r.data),
   moveEvent: (input: { cacheId: number; start: string; end: string }) =>
     api.put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, { start: input.start, end: input.end }).then((r) => r.data),
+  /** Store the user's own color for an event; null restores the automatic one. */
+  setEventColor: (input: { cacheId: number; color: string | null }) =>
+    api.put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, { color: input.color }).then((r) => r.data),
+  /** Copy an event to the next free day. The copy is local: Google is never written. */
+  duplicateEvent: (cacheId: number) =>
+    api
+      .post<{ cacheId: number; eventId: string; start: string; end: string }>(`/calendar/events/${cacheId}/duplicate`)
+      .then((r) => r.data),
   events: (from: string, to: string) =>
     api
       .get<{ events: CalendarEvent[]; errors: { accountId: number; email: string; message: string }[] }>(
@@ -404,6 +446,10 @@ export const useSyncCalendars = () =>
 export const useTagEvent = () => useCalendarMutation((input: TagEventInput) => calendarApi.tag(input));
 export const useMoveEvent = () =>
   useCalendarMutation((input: { cacheId: number; start: string; end: string }) => calendarApi.moveEvent(input));
+export const useSetEventColor = () =>
+  useCalendarMutation((input: { cacheId: number; color: string | null }) => calendarApi.setEventColor(input));
+export const useDuplicateEvent = () =>
+  useCalendarMutation((cacheId: number) => calendarApi.duplicateEvent(cacheId));
 export const useSaveCalendarSettings = () => useCalendarMutation((s: CalendarSettings) => calendarApi.saveSettings(s));
 export const useCreateFocusBlock = () =>
   useCalendarMutation((b: { title?: string; start: string; end: string }) => calendarApi.createFocusBlock(b));

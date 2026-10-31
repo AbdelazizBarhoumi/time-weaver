@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -61,6 +62,8 @@ class CalendarEventController extends Controller
                     'end' => $event['allDay'] ? $event['end']->toDateString() : $event['end']->toISOString(),
                     'allDay' => $event['allDay'],
                     'color' => $event['color'],
+                    'hasCustomColor' => $event['hasCustomColor'],
+                    'isLocal' => $event['isLocal'],
                     'isWork' => $event['isWork'],
                     'workSource' => $event['workSource'],
                     'syncedAt' => $event['syncedAt']?->toISOString(),
@@ -197,18 +200,27 @@ class CalendarEventController extends Controller
     }
 
     /**
-     * Move a cached event to a new time without touching Google.
+     * Edit a cached event without touching Google: move it and/or recolor it.
      *
-     * The cache is a mirror of Google, so the move is stored as a local override
-     * which `index` applies when it serves the event. A work tag's tracked
-     * session is shifted with it so calendar work keeps its real times.
+     * The cache is a mirror of Google, so both edits are stored as a local
+     * override which `index` applies when it serves the event. A work tag's
+     * tracked session is shifted with a move so calendar work keeps its real
+     * times.
      */
     public function update(Request $request, int $eventId): JsonResponse
     {
         $data = $request->validate([
-            'start' => 'required|date',
-            'end' => 'required|date',
+            'start' => ['nullable', 'date', 'required_with:end'],
+            'end' => ['nullable', 'date', 'required_with:start'],
+            'color' => ['nullable', 'string', 'regex:/^#[0-9a-fA-F]{6}$/'],
         ]);
+
+        $moving = isset($data['start'], $data['end']);
+        $recoloring = array_key_exists('color', $data);
+
+        if (! $moving && ! $recoloring) {
+            throw ValidationException::withMessages(['event' => 'Send new times or a color.']);
+        }
 
         $user = $request->user();
         $event = CalendarEvent::where('user_id', $user->id)->whereKey($eventId)->firstOrFail();
@@ -220,22 +232,43 @@ class CalendarEventController extends Controller
             ]);
         }
 
-        $start = Carbon::parse($data['start'], 'UTC')->utc();
-        $end = Carbon::parse($data['end'], 'UTC')->utc();
+        $override = CalendarEventOverride::firstOrNew([
+            'calendar_account_id' => $account->id,
+            'event_id' => $event->event_id,
+        ]);
 
-        if ($end->lessThanOrEqualTo($start)) {
-            throw ValidationException::withMessages(['end' => 'The end must be after the start.']);
+        $override->fill([
+            'user_id' => $user->id,
+            'recurring_event_id' => $event->recurring_event_id,
+        ]);
+
+        if ($recoloring) {
+            $override->color = $data['color'];
         }
 
-        CalendarEventOverride::updateOrCreate(
-            ['calendar_account_id' => $account->id, 'event_id' => $event->event_id],
-            [
-                'user_id' => $user->id,
-                'recurring_event_id' => $event->recurring_event_id,
-                'start' => $start,
-                'end' => $end,
-            ],
-        );
+        if ($moving) {
+            $start = Carbon::parse($data['start'], 'UTC')->utc();
+            $end = Carbon::parse($data['end'], 'UTC')->utc();
+
+            if ($end->lessThanOrEqualTo($start)) {
+                throw ValidationException::withMessages(['end' => 'The end must be after the start.']);
+            }
+
+            $override->start = $start;
+            $override->end = $end;
+        }
+
+        // "Automatic" on an untouched event leaves nothing to remember, and an
+        // empty override would only slow the feed down.
+        if ($override->start === null && $override->color === null) {
+            if ($override->exists) {
+                $override->delete();
+            }
+
+            return response()->json(['ok' => true]);
+        }
+
+        $override->save();
 
         // Only manually tagged work has a mirrored session; keep it in step.
         $tagged = CalendarEventTag::where('calendar_account_id', $account->id)
@@ -243,11 +276,113 @@ class CalendarEventController extends Controller
             ->where('is_work', true)
             ->exists();
 
-        if ($tagged) {
-            $this->recordCalendarSession($user, $account, $event->event_id, (bool) $event->all_day, $event->title, $start, $end);
+        if ($moving && $tagged && $override->end !== null && $override->start !== null) {
+            $this->recordCalendarSession($user, $account, $event->event_id, (bool) $event->all_day, $event->title, $override->start, $override->end);
         }
 
         return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Copy a cached event to the next free day at the same clock time.
+     *
+     * Google access is read-only, so the copy exists only here: it is a local
+     * row wearing a `local-` event id, which the feed serves like any other
+     * event and a sync never deletes. The copy is standalone — it keeps the
+     * source's manual work state but no recurring series, so editing or deleting
+     * it can never touch the original.
+     */
+    public function duplicate(Request $request, int $eventId): JsonResponse
+    {
+        $user = $request->user();
+        $event = CalendarEvent::where('user_id', $user->id)->whereKey($eventId)->firstOrFail();
+        $account = $event->account;
+
+        if ($account === null) {
+            throw ValidationException::withMessages([
+                'event' => 'This event belongs to an account that is no longer connected.',
+            ]);
+        }
+
+        $override = CalendarEventOverride::where('calendar_account_id', $account->id)
+            ->where('event_id', $event->event_id)
+            ->first();
+
+        // Copy where the event actually sits, not where Google last saw it.
+        $start = ($override?->start ?? $event->start)->copy()->addDay();
+        $end = ($override?->end ?? $event->end)->copy()->addDay();
+
+        // Copying twice must not stack two invisible events on the same slot, so
+        // walk forward until the day is free.
+        for ($attempt = 0; $attempt < 30 && $this->copySlotTaken($user, $account, $event->title, $start); $attempt++) {
+            $start->addDay();
+            $end->addDay();
+        }
+
+        $copy = CalendarEvent::create([
+            'user_id' => $user->id,
+            'calendar_account_id' => $account->id,
+            'account_email' => $account->email,
+            'color' => $account->color,
+            'event_id' => 'local-'.Str::uuid(),
+            'recurring_event_id' => null,
+            'calendar_id' => $event->calendar_id,
+            'calendar_name' => $event->calendar_name,
+            'title' => $event->title,
+            'start' => $start,
+            'end' => $end,
+            'all_day' => $event->all_day,
+            'event_color' => $override?->color ?? $event->event_color,
+            'is_local' => true,
+            'synced_at' => null,
+        ]);
+
+        $this->copyWorkTag($user, $account, $event, $copy);
+
+        return response()->json([
+            'cacheId' => $copy->id,
+            'eventId' => $copy->event_id,
+            // All-day copies keep the date-only shape the calendar UI expects.
+            'start' => $event->all_day ? $start->toDateString() : $start->toISOString(),
+            'end' => $event->all_day ? $end->toDateString() : $end->toISOString(),
+        ], 201);
+    }
+
+    /**
+     * Whether another copy of the same event already starts at this slot.
+     */
+    private function copySlotTaken(User $user, CalendarAccount $account, string $title, Carbon $start): bool
+    {
+        return CalendarEvent::where('user_id', $user->id)
+            ->where('calendar_account_id', $account->id)
+            ->where('is_local', true)
+            ->where('title', $title)
+            ->where('start', $start)
+            ->exists();
+    }
+
+    /**
+     * Give a copy the source's manual work state so it renders the same way.
+     *
+     * No tracked session is mirrored: the copy is a plan, not tracked time, and
+     * a session would double-count the same hours.
+     */
+    private function copyWorkTag(User $user, CalendarAccount $account, CalendarEvent $source, CalendarEvent $copy): void
+    {
+        $tag = CalendarEventTag::where('calendar_account_id', $account->id)
+            ->where('event_id', $source->event_id)
+            ->first();
+
+        if ($tag === null) {
+            return;
+        }
+
+        CalendarEventTag::create([
+            'user_id' => $user->id,
+            'calendar_account_id' => $account->id,
+            'event_id' => $copy->event_id,
+            'is_work' => $tag->is_work,
+        ]);
     }
 
     /**
@@ -269,6 +404,18 @@ class CalendarEventController extends Controller
         $event = CalendarEvent::where('user_id', $request->user()->id)
             ->whereKey($eventId)
             ->firstOrFail();
+
+        // A local row (a duplicate) has no Google counterpart: deleting it is
+        // final, so there is no dismissal to record and no series to consider.
+        if ($event->is_local) {
+            CalendarEventOverride::where('calendar_account_id', $event->calendar_account_id)
+                ->where('event_id', $event->event_id)
+                ->delete();
+
+            $event->delete();
+
+            return response()->json(['removed' => 1]);
+        }
 
         $seriesId = $event->recurring_event_id;
         $wholeSeries = ($data['scope'] ?? 'this') === 'series' && $seriesId !== null;

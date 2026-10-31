@@ -8,11 +8,11 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * A locally moved Google event. The cache keeps the times Google sent, so a
- * later sync cannot revert the drag; this override wins when the calendar reads
- * the event back.
+ * A local edit to a cached Google event: the times it was dragged to and/or the
+ * color the user picked. The cache keeps what Google sent, so a later sync
+ * cannot revert the change; this override wins when the calendar reads it back.
  */
-#[Fillable(['user_id', 'calendar_account_id', 'event_id', 'recurring_event_id', 'start', 'end'])]
+#[Fillable(['user_id', 'calendar_account_id', 'event_id', 'recurring_event_id', 'start', 'end', 'color'])]
 class CalendarEventOverride extends Model
 {
     use HasFactory;

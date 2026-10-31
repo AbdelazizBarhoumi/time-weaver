@@ -78,6 +78,9 @@ class CalendarSyncService
 
         $removed = 0;
         CalendarEvent::where('calendar_account_id', $account->id)
+            // Duplicated events live only here; Google never returns them, so
+            // they are never stale.
+            ->where('is_local', false)
             ->where('start', '<', $to)
             ->where('end', '>', $from)
             ->get()
@@ -110,6 +113,7 @@ class CalendarSyncService
     private function removeStaleSeries(CalendarAccount $account, array $seenSeries, array $dismissals): int
     {
         $candidates = CalendarEvent::where('calendar_account_id', $account->id)
+            ->where('is_local', false)
             ->whereNotNull('recurring_event_id')
             ->pluck('calendar_id', 'recurring_event_id')
             ->reject(fn (string $calendarId, string $seriesId): bool => isset($seenSeries[$seriesId])

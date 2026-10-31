@@ -35,10 +35,12 @@ import {
   useDeleteCalendarEvent,
   useDeleteFocusBlock,
   useDeleteSideTask,
+  useDuplicateEvent,
   useFocusBlocks,
   useMoveEvent,
   usePurgeAccountEvents,
   useRestoreAccountEvents,
+  useSetEventColor,
   useSideTasks,
   useSyncCalendars,
   useTagEvent,
@@ -168,6 +170,8 @@ function CalendarPage() {
   const purgeEvents = usePurgeAccountEvents();
   const restoreEvents = useRestoreAccountEvents();
   const deleteEvent = useDeleteCalendarEvent();
+  const duplicateEvent = useDuplicateEvent();
+  const setEventColor = useSetEventColor();
   const updateAccount = useUpdateCalendarAccount();
 
   const settings = settingsQ.data ?? DEFAULT_SETTINGS;
@@ -471,6 +475,31 @@ function CalendarPage() {
     );
   };
 
+  /**
+   * Copy an event onto the next free day at the same time. Google is read-only,
+   * so the copy is saved here and never written back.
+   */
+  const duplicateCalendarEvent = (event: CalendarEvent) => {
+    duplicateEvent.mutate(event.cacheId, {
+      onSuccess: () => toast.success(`Copied "${event.title}" — drag the copy to place it`),
+      onError: () => toast.error("Could not copy that event."),
+    });
+  };
+
+  /** Recolor one occurrence locally; null hands it back to the automatic color. */
+  const colorCalendarEvent = (event: CalendarEvent, color: string | null) => {
+    setEventColor.mutate(
+      { cacheId: event.cacheId, color },
+      {
+        onSuccess: () =>
+          toast.success(
+            color === null ? `"${event.title}" is back to its automatic color` : `Recolored "${event.title}"`,
+          ),
+        onError: () => toast.error("Could not change that event's color."),
+      },
+    );
+  };
+
   const completeTask = (task: SideTask, completed: boolean) => {
     updateTask.mutate(
       { id: task.id, patch: { completed } },
@@ -672,6 +701,8 @@ function CalendarPage() {
                 onToggleWork={(e) => onToggleWork(e)}
                 onResetWork={(e) => onResetWork(e)}
                 onDeleteEvent={removeEvent}
+                onDuplicateEvent={duplicateCalendarEvent}
+                onSetEventColor={colorCalendarEvent}
                 onPlaceTask={placeTask}
                 onScheduleTask={scheduleTask}
                 onMoveFocus={moveFocusBlock}
@@ -717,8 +748,9 @@ function CalendarPage() {
           )}
           <p className="mt-3 font-mono text-[11px] text-mut">
             Drag empty space to plan · Drag an event, task or block to another time or day · Drag a block's top or bottom
-            edge to resize it · Click an event to mark it as work (adds a tracked session) · Right-click to reset · Click a
-            green gap to log that time · Drag a side task onto a day to schedule it
+            edge to resize it · Click an event to mark it as work (adds a tracked session) · Right-click to reset · The ⋯
+            menu copies an event to the next day and recolors it · Click a green gap to log that time · Drag a side task
+            onto a day to schedule it
           </p>
         </div>
 

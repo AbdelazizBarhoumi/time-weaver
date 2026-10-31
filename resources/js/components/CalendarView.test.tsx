@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { render, screen, fireEvent } from "@/test/utils";
 import { CalendarView } from "@/components/CalendarView";
 import { SIDE_TASK_DRAG_TYPE, type CalendarEvent, type CalendarSettings, type FocusBlock, type SideTask } from "@/lib/calendar";
@@ -48,6 +49,9 @@ function calendarEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     start: at(15),
     end: at(16),
     allDay: false,
+    color: null,
+    hasCustomColor: false,
+    isLocal: false,
     isWork: false,
     workSource: null,
     ...overrides,
@@ -77,6 +81,8 @@ function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
       onToggleWork={noop}
       onResetWork={noop}
       onDeleteEvent={noop}
+      onDuplicateEvent={noop}
+      onSetEventColor={noop}
       onCreateFocus={noop}
       onDeleteFocus={noop}
       onStartFocus={noop}
@@ -348,5 +354,43 @@ describe("CalendarView drag and drop", () => {
       new Date("2026-10-15T00:00:00Z"),
       new Date("2026-10-16T00:00:00Z"),
     );
+  });
+});
+
+describe("CalendarView event actions", () => {
+  it("duplicates an event from its actions menu", async () => {
+    const user = userEvent.setup();
+    const onDuplicateEvent = vi.fn();
+    renderView({ events: [calendarEvent()], onDuplicateEvent });
+
+    await user.click(screen.getByRole("button", { name: "Event actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Duplicate/ }));
+
+    expect(onDuplicateEvent).toHaveBeenCalledWith(expect.objectContaining({ cacheId: 9, eventId: "evt" }));
+  });
+
+  it("recolors an event without toggling its work state", async () => {
+    const user = userEvent.setup();
+    const onSetEventColor = vi.fn();
+    const onToggleWork = vi.fn();
+    renderView({ events: [calendarEvent()], onSetEventColor, onToggleWork });
+
+    await user.click(screen.getByRole("button", { name: "Event actions" }));
+    await user.click(await screen.findByRole("button", { name: "Green" }));
+
+    expect(onSetEventColor).toHaveBeenCalledWith(expect.objectContaining({ cacheId: 9 }), "#34d399");
+    expect(onToggleWork).not.toHaveBeenCalled();
+  });
+
+  it("draws an event in the color the user picked, even when it is work", () => {
+    renderView({ events: [calendarEvent({ isWork: true, color: "#34d399", hasCustomColor: true })] });
+
+    expect(screen.getByTitle(/Standup/)).toHaveStyle({ borderLeft: "3px solid #34d399" });
+  });
+
+  it("marks a copied event as local", () => {
+    renderView({ events: [calendarEvent({ isLocal: true })] });
+
+    expect(screen.getByText(/copy/)).toBeInTheDocument();
   });
 });

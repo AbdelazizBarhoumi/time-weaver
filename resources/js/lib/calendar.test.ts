@@ -6,6 +6,8 @@ import {
   computeDayBudget,
   computeDayInsights,
   computeWorkableTimeLeft,
+  eventAccent,
+  eventBackground,
   freeIntervals,
   isRequiredDay,
   isSideTaskDone,
@@ -67,6 +69,9 @@ function makeEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
     start: at(wednesday, 9, 0),
     end: at(wednesday, 10, 0),
     allDay: false,
+    color: null,
+    hasCustomColor: false,
+    isLocal: false,
     isWork: false,
     workSource: null,
     ...overrides,
@@ -1236,5 +1241,21 @@ describe("study sessions", () => {
 
     expect(ctx.study.weekHours).toBe(0);
     expect(ctx.study.sessions).toEqual([]);
+  });
+});
+
+describe("event colors", () => {
+  it("uses the mailbox color until the user picks one", () => {
+    const event = makeEvent({ accountColor: "#5b9cff", color: "#123456" });
+
+    expect(eventAccent(event)).toBe("#5b9cff");
+    expect(eventBackground(event)).toBe("#5b9cff2e");
+  });
+
+  it("uses the user's own color once it is set", () => {
+    const event = makeEvent({ accountColor: "#5b9cff", color: "#34d399", hasCustomColor: true });
+
+    expect(eventAccent(event)).toBe("#34d399");
+    expect(eventBackground(event, "33")).toBe("#34d39933");
   });
 });

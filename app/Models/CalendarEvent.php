@@ -21,6 +21,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'end',
     'all_day',
     'event_color',
+    'is_local',
     'synced_at',
 ])]
 class CalendarEvent extends Model
@@ -33,6 +34,7 @@ class CalendarEvent extends Model
             'start' => 'datetime',
             'end' => 'datetime',
             'all_day' => 'boolean',
+            'is_local' => 'boolean',
             'synced_at' => 'datetime',
         ];
     }
