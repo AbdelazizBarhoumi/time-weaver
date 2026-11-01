@@ -15,6 +15,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Throwable;
 
@@ -63,6 +64,8 @@ class CalendarEventController extends Controller
                     'allDay' => $event['allDay'],
                     'color' => $event['color'],
                     'hasCustomColor' => $event['hasCustomColor'],
+                    'category' => $event['category'],
+                    'categorySource' => $event['categorySource'],
                     'isLocal' => $event['isLocal'],
                     'isWork' => $event['isWork'],
                     'workSource' => $event['workSource'],
@@ -72,6 +75,80 @@ class CalendarEventController extends Controller
             ->values();
 
         return response()->json(['events' => $events, 'errors' => []]);
+    }
+
+    /**
+     * Create an event that lives only in Time Weaver. Google access is
+     * read-only, so the event is attached to the user's first connected mailbox
+     * and every later sync leaves the `local-` row alone.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'title' => ['required', 'filled', 'string', 'max:512'],
+            'start' => ['required', 'date'],
+            'end' => ['required', 'date', 'after:start'],
+            'all_day' => ['sometimes', 'boolean'],
+            'category_id' => ['nullable', 'integer', Rule::exists('categories', 'id')->where('user_id', $request->user()->id)],
+            'color' => ['nullable', 'string', 'regex:/^#[0-9a-fA-F]{6}$/'],
+        ]);
+
+        $user = $request->user();
+        $account = $user->calendarAccounts()
+            ->whereNull('disconnected_at')
+            ->orderBy('id')
+            ->first();
+
+        if ($account === null) {
+            throw ValidationException::withMessages([
+                'event' => 'Connect a Google account before creating an event.',
+            ]);
+        }
+
+        $allDay = (bool) ($data['all_day'] ?? false);
+        $start = Carbon::parse($data['start'], 'UTC')->utc();
+        $end = Carbon::parse($data['end'], 'UTC')->utc();
+
+        if ($end->lessThanOrEqualTo($start)) {
+            throw ValidationException::withMessages(['end' => 'The end must be after the start.']);
+        }
+
+        $event = CalendarEvent::create([
+            'user_id' => $user->id,
+            'calendar_account_id' => $account->id,
+            'account_email' => $account->email,
+            'color' => $account->color,
+            'event_id' => 'local-'.Str::uuid(),
+            'recurring_event_id' => null,
+            'calendar_id' => 'primary',
+            'calendar_name' => 'Time Weaver',
+            'title' => trim($data['title']),
+            'start' => $start,
+            'end' => $end,
+            'all_day' => $allDay,
+            'event_color' => $data['color'] ?? null,
+            'is_local' => true,
+            'synced_at' => null,
+        ]);
+
+        if (($data['category_id'] ?? null) !== null) {
+            CalendarEventOverride::create([
+                'user_id' => $user->id,
+                'calendar_account_id' => $account->id,
+                'event_id' => $event->event_id,
+                'recurring_event_id' => null,
+                'category_id' => $data['category_id'],
+                'category_override' => true,
+            ]);
+        }
+
+        return response()->json([
+            'cacheId' => $event->id,
+            'eventId' => $event->event_id,
+            // All-day events keep the date-only shape the calendar UI expects.
+            'start' => $allDay ? $start->toDateString() : $start->toISOString(),
+            'end' => $allDay ? $end->toDateString() : $end->toISOString(),
+        ], 201);
     }
 
     /**
@@ -200,12 +277,12 @@ class CalendarEventController extends Controller
     }
 
     /**
-     * Edit a cached event without touching Google: move it and/or recolor it.
-     *
-     * The cache is a mirror of Google, so both edits are stored as a local
-     * override which `index` applies when it serves the event. A work tag's
-     * tracked session is shifted with a move so calendar work keeps its real
-     * times.
+     * Edit a cached event without touching Google: move it, recolor it, or put
+     * it in a category. Google's cache row stays authoritative, so these edits
+     * are stored as a local override which `index` applies when it serves the
+     * event. A local event (created here or a duplicate) is its own source, so
+     * its times and title are changed on the row itself. A work tag's tracked
+     * session is shifted with a move so calendar work keeps its real times.
      */
     public function update(Request $request, int $eventId): JsonResponse
     {
@@ -213,13 +290,21 @@ class CalendarEventController extends Controller
             'start' => ['nullable', 'date', 'required_with:end'],
             'end' => ['nullable', 'date', 'required_with:start'],
             'color' => ['nullable', 'string', 'regex:/^#[0-9a-fA-F]{6}$/'],
+            'category_id' => ['sometimes', 'nullable', 'integer', Rule::exists('categories', 'id')->where('user_id', $request->user()->id)],
+            'use_default_category' => ['sometimes', 'boolean'],
+            'title' => ['sometimes', 'filled', 'string', 'max:512'],
+            'all_day' => ['sometimes', 'boolean'],
         ]);
 
         $moving = isset($data['start'], $data['end']);
         $recoloring = array_key_exists('color', $data);
+        $recategorizing = array_key_exists('category_id', $data);
+        $resettingCategory = (bool) ($data['use_default_category'] ?? false);
+        $renaming = array_key_exists('title', $data);
+        $retyping = array_key_exists('all_day', $data);
 
-        if (! $moving && ! $recoloring) {
-            throw ValidationException::withMessages(['event' => 'Send new times or a color.']);
+        if (! $moving && ! $recoloring && ! $recategorizing && ! $resettingCategory && ! $renaming && ! $retyping) {
+            throw ValidationException::withMessages(['event' => 'Send new times, a color, or a category.']);
         }
 
         $user = $request->user();
@@ -232,18 +317,48 @@ class CalendarEventController extends Controller
             ]);
         }
 
-        $override = CalendarEventOverride::firstOrNew([
-            'calendar_account_id' => $account->id,
-            'event_id' => $event->event_id,
-        ]);
+        if (($renaming || $retyping) && ! $event->is_local) {
+            throw ValidationException::withMessages([
+                'event' => 'Only events saved in Time Weaver can be renamed or switched to all-day.',
+            ]);
+        }
 
-        $override->fill([
-            'user_id' => $user->id,
-            'recurring_event_id' => $event->recurring_event_id,
-        ]);
+        if ($renaming) {
+            $event->title = trim($data['title']);
+        }
 
-        if ($recoloring) {
-            $override->color = $data['color'];
+        if ($retyping) {
+            $event->all_day = $data['all_day'];
+        }
+
+        $needsOverride = $recoloring || $recategorizing || $resettingCategory || ($moving && ! $event->is_local);
+        $override = null;
+
+        if ($needsOverride) {
+            $override = CalendarEventOverride::firstOrNew([
+                'calendar_account_id' => $account->id,
+                'event_id' => $event->event_id,
+            ]);
+
+            $override->fill([
+                'user_id' => $user->id,
+                'recurring_event_id' => $event->recurring_event_id,
+            ]);
+
+            if ($recoloring) {
+                $override->color = $data['color'];
+            }
+
+            if ($recategorizing) {
+                $override->category_id = $data['category_id'];
+                $override->category_override = true;
+            }
+
+            // "Use the mailbox default" hands the event back to its account.
+            if ($resettingCategory) {
+                $override->category_id = null;
+                $override->category_override = false;
+            }
         }
 
         if ($moving) {
@@ -254,13 +369,27 @@ class CalendarEventController extends Controller
                 throw ValidationException::withMessages(['end' => 'The end must be after the start.']);
             }
 
-            $override->start = $start;
-            $override->end = $end;
+            if ($event->is_local) {
+                $event->start = $start;
+                $event->end = $end;
+            } else {
+                $override->start = $start;
+                $override->end = $end;
+            }
+        }
+
+        if ($event->isDirty()) {
+            $event->save();
+        }
+
+        if ($override === null) {
+            return response()->json(['ok' => true]);
         }
 
         // "Automatic" on an untouched event leaves nothing to remember, and an
-        // empty override would only slow the feed down.
-        if ($override->start === null && $override->color === null) {
+        // empty override would only slow the feed down. An explicit "no category"
+        // (category_override) is a real choice and must survive.
+        if ($override->start === null && $override->color === null && $override->category_id === null && ! $override->category_override) {
             if ($override->exists) {
                 $override->delete();
             }
@@ -276,8 +405,11 @@ class CalendarEventController extends Controller
             ->where('is_work', true)
             ->exists();
 
-        if ($moving && $tagged && $override->end !== null && $override->start !== null) {
-            $this->recordCalendarSession($user, $account, $event->event_id, (bool) $event->all_day, $event->title, $override->start, $override->end);
+        $sessionStart = $event->is_local ? $event->start : $override->start;
+        $sessionEnd = $event->is_local ? $event->end : $override->end;
+
+        if ($moving && $tagged && $sessionEnd !== null && $sessionStart !== null) {
+            $this->recordCalendarSession($user, $account, $event->event_id, (bool) $event->all_day, $event->title, $sessionStart, $sessionEnd);
         }
 
         return response()->json(['ok' => true]);
@@ -338,6 +470,21 @@ class CalendarEventController extends Controller
         ]);
 
         $this->copyWorkTag($user, $account, $event, $copy);
+
+        // A category choice and a manual color live on the override, so the copy
+        // needs its own row to keep the same look. An explicit "no category" must
+        // be copied too, or the copy would inherit the mailbox default.
+        if ($override !== null && ($override->color !== null || $override->category_override)) {
+            CalendarEventOverride::create([
+                'user_id' => $user->id,
+                'calendar_account_id' => $account->id,
+                'event_id' => $copy->event_id,
+                'recurring_event_id' => null,
+                'color' => $override->color,
+                'category_id' => $override->category_id,
+                'category_override' => $override->category_override,
+            ]);
+        }
 
         return response()->json([
             'cacheId' => $copy->id,

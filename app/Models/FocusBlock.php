@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['user_id', 'title', 'start', 'end'])]
+#[Fillable(['user_id', 'category_id', 'title', 'start', 'end'])]
 class FocusBlock extends Model
 {
     protected function casts(): array
@@ -19,8 +19,13 @@ class FocusBlock extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function category(): BelongsTo
+    {
+        return $this->belongsTo(Category::class);
+    }
+
     /**
-     * @return array{id: int, title: string, start: string, end: string}
+     * @return array{id: int, title: string, start: string, end: string, category: array<string, mixed>|null}
      */
     public function toApi(): array
     {
@@ -29,6 +34,7 @@ class FocusBlock extends Model
             'title' => $this->title,
             'start' => $this->start->toIso8601String(),
             'end' => $this->end->toIso8601String(),
+            'category' => $this->category?->toApi(),
         ];
     }
 }

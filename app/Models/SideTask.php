@@ -14,7 +14,7 @@ use Illuminate\Support\Carbon;
  * estimate, optionally placed on the calendar. A placed task auto-completes once
  * its slot has passed, and can also be completed by hand.
  */
-#[Fillable(['user_id', 'title', 'estimate_minutes', 'start', 'end', 'completed_at', 'blocks_work'])]
+#[Fillable(['user_id', 'category_id', 'title', 'estimate_minutes', 'start', 'end', 'completed_at', 'blocks_work'])]
 class SideTask extends Model
 {
     /** @use HasFactory<SideTaskFactory> */
@@ -34,6 +34,11 @@ class SideTask extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function category(): BelongsTo
+    {
+        return $this->belongsTo(Category::class);
     }
 
     /**
@@ -72,7 +77,7 @@ class SideTask extends Model
     }
 
     /**
-     * @return array{id: int, title: string, estimateMinutes: int, blocksWork: bool, start: string|null, end: string|null, completedAt: string|null, done: bool}
+     * @return array{id: int, title: string, estimateMinutes: int, blocksWork: bool, start: string|null, end: string|null, completedAt: string|null, done: bool, category: array<string, mixed>|null}
      */
     public function toApi(?Carbon $now = null): array
     {
@@ -85,6 +90,7 @@ class SideTask extends Model
             'end' => $this->effectiveEnd()?->toIso8601String(),
             'completedAt' => $this->completed_at?->toIso8601String(),
             'done' => $this->isDone($now),
+            'category' => $this->category?->toApi(),
         ];
     }
 }

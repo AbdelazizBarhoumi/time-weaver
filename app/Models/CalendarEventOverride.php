@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * color the user picked. The cache keeps what Google sent, so a later sync
  * cannot revert the change; this override wins when the calendar reads it back.
  */
-#[Fillable(['user_id', 'calendar_account_id', 'event_id', 'recurring_event_id', 'start', 'end', 'color'])]
+#[Fillable(['user_id', 'calendar_account_id', 'event_id', 'recurring_event_id', 'start', 'end', 'color', 'category_id', 'category_override'])]
 class CalendarEventOverride extends Model
 {
     use HasFactory;
@@ -22,6 +22,7 @@ class CalendarEventOverride extends Model
         return [
             'start' => 'datetime',
             'end' => 'datetime',
+            'category_override' => 'boolean',
         ];
     }
 
@@ -33,5 +34,10 @@ class CalendarEventOverride extends Model
     public function account(): BelongsTo
     {
         return $this->belongsTo(CalendarAccount::class, 'calendar_account_id');
+    }
+
+    public function category(): BelongsTo
+    {
+        return $this->belongsTo(Category::class);
     }
 }

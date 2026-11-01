@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiMonthStats, type ApiStats } from "./api";
+import { categoryTheme, type Category, type CategoryTheme } from "./categories";
 import { DAILY_GOAL_HOURS, formatHM, type Segment } from "./tracker";
 
 export interface CalendarAccount {
@@ -13,6 +14,8 @@ export interface CalendarAccount {
   lastSyncedAt?: string | null;
   /** True when the account was disconnected; its cached events are kept. */
   disconnected?: boolean;
+  /** Every event from this mailbox inherits this category unless it has its own. */
+  defaultCategory?: Category | null;
   /** Events deleted for good from this mailbox, which a sync will not restore. */
   hiddenCount?: number;
 }
@@ -65,6 +68,14 @@ export interface CalendarEvent {
   color: string | null;
   /** True when `color` is the user's own pick rather than Google's calendar color. */
   hasCustomColor: boolean;
+  /** The user's category for this occurrence, if any. */
+  category?: Category | null;
+  /**
+   * Where `category` came from: the event's own choice ("event"), its mailbox's
+   * default ("account"), or nowhere (null). An explicit "event" choice wins even
+   * when it carries no category.
+   */
+  categorySource?: "event" | "account" | null;
   /** True for an event that exists only here (a duplicate), not in Google. */
   isLocal: boolean;
   isWork: boolean;
@@ -88,9 +99,11 @@ export const EVENT_COLORS = [
   { name: "Slate", value: "#94a3b8" },
 ] as const;
 
-/** The strong color of an event: the user's own pick, else its mailbox's. */
+/** The strong color of an event: the user's own pick, else its category, else its mailbox's. */
 export function eventAccent(event: CalendarEvent): string {
-  return event.hasCustomColor && event.color !== null ? event.color : event.accountColor;
+  if (event.hasCustomColor && event.color !== null) return event.color;
+  if (event.category) return event.category.color;
+  return event.accountColor;
 }
 
 /**
@@ -99,6 +112,16 @@ export function eventAccent(event: CalendarEvent): string {
  */
 export function eventBackground(event: CalendarEvent, alpha = "2e"): string {
   return `${eventAccent(event)}${alpha}`;
+}
+
+/**
+ * The themed surface for an event, or null when it has neither a category nor
+ * a manual color and should keep the plain work/neutral fill.
+ */
+export function eventTheme(event: CalendarEvent): CategoryTheme | null {
+  if (event.hasCustomColor && event.color !== null) return categoryTheme(null, event.color);
+  if (event.category) return categoryTheme(event.category, event.accountColor);
+  return null;
 }
 
 /** A tracked work session, rendered onto the calendar grid. */
@@ -142,6 +165,7 @@ export interface FocusBlock {
   title: string;
   start: string;
   end: string;
+  category?: Category | null;
 }
 
 /**
@@ -165,6 +189,7 @@ export interface SideTask {
   completedAt: string | null;
   /** Server snapshot; re-derive it against the ticking clock with `isSideTaskDone`. */
   done: boolean;
+  category?: Category | null;
 }
 
 export type SideTaskStatus = "unscheduled" | "scheduled" | "done";
@@ -250,9 +275,18 @@ export const calendarApi = {
   disconnect: (id: number) => api.delete(`/calendar/accounts/${id}`),
   purgeAccountEvents: (id: number) => api.delete<{ removed: number }>(`/calendar/accounts/${id}/events`).then((r) => r.data),
   restoreAccountEvents: (id: number) => api.delete<{ restored: number }>(`/calendar/accounts/${id}/dismissals`).then((r) => r.data),
-  updateAccount: (id: number, defaultWork: boolean) =>
+  updateAccount: (
+    id: number,
+    patch: { defaultWork?: boolean; defaultCategoryId?: number | null },
+  ) =>
     api
-      .patch<{ id: number; defaultWork: boolean }>(`/calendar/accounts/${id}`, { default_work: defaultWork })
+      .patch<{ id: number; defaultWork: boolean; defaultCategory: Category | null }>(
+        `/calendar/accounts/${id}`,
+        {
+          ...(patch.defaultWork !== undefined ? { default_work: patch.defaultWork } : {}),
+          ...(patch.defaultCategoryId !== undefined ? { default_category_id: patch.defaultCategoryId } : {}),
+        },
+      )
       .then((r) => r.data),
   deleteEvent: (input: DeleteEventInput) =>
     api
@@ -267,6 +301,52 @@ export const calendarApi = {
       .then((r) => r.data),
   moveEvent: (input: { cacheId: number; start: string; end: string }) =>
     api.put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, { start: input.start, end: input.end }).then((r) => r.data),
+  /** Create an event that lives only in Time Weaver. */
+  createEvent: (input: {
+    title: string;
+    start: string;
+    end: string;
+    allDay?: boolean;
+    categoryId?: number | null;
+  }) =>
+    api
+      .post<{ cacheId: number; eventId: string; start: string; end: string }>("/calendar/events", {
+        title: input.title,
+        start: input.start,
+        end: input.end,
+        all_day: input.allDay ?? false,
+        category_id: input.categoryId ?? null,
+      })
+      .then((r) => r.data),
+  /** Edit a local event's title/times, or any event's category. */
+  updateEvent: (input: {
+    cacheId: number;
+    title?: string;
+    start?: string;
+    end?: string;
+    allDay?: boolean;
+    categoryId?: number | null;
+  }) =>
+    api
+      .put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.start !== undefined ? { start: input.start } : {}),
+        ...(input.end !== undefined ? { end: input.end } : {}),
+        ...(input.allDay !== undefined ? { all_day: input.allDay } : {}),
+        ...(input.categoryId !== undefined ? { category_id: input.categoryId } : {}),
+      })
+      .then((r) => r.data),
+  /**
+   * Store an event's category locally; null means "no category for this event".
+   * `useDefault` hands it back to the mailbox's default category instead.
+   */
+  setEventCategory: (input: { cacheId: number; categoryId: number | null; useDefault?: boolean }) =>
+    api
+      .put<{ ok: boolean }>(
+        `/calendar/events/${input.cacheId}`,
+        input.useDefault ? { use_default_category: true } : { category_id: input.categoryId },
+      )
+      .then((r) => r.data),
   /** Store the user's own color for an event; null restores the automatic one. */
   setEventColor: (input: { cacheId: number; color: string | null }) =>
     api.put<{ ok: boolean }>(`/calendar/events/${input.cacheId}`, { color: input.color }).then((r) => r.data),
@@ -305,19 +385,43 @@ export const calendarApi = {
       .then((r) => r.data),
   focusBlocks: (from: string, to: string) =>
     api.get<FocusBlock[]>("/calendar/focus-blocks", { params: { from, to } }).then((r) => r.data),
-  createFocusBlock: (b: { title?: string; start: string; end: string }) =>
-    api.post<FocusBlock>("/calendar/focus-blocks", b).then((r) => r.data),
-  updateFocusBlock: (id: number, patch: { title?: string; start?: string; end?: string }) =>
-    api.put<FocusBlock>(`/calendar/focus-blocks/${id}`, patch).then((r) => r.data),
+  createFocusBlock: (b: { title?: string; start: string; end: string; categoryId?: number | null }) =>
+    api
+      .post<FocusBlock>("/calendar/focus-blocks", {
+        title: b.title,
+        start: b.start,
+        end: b.end,
+        category_id: b.categoryId ?? null,
+      })
+      .then((r) => r.data),
+  updateFocusBlock: (
+    id: number,
+    patch: { title?: string; start?: string; end?: string; categoryId?: number | null },
+  ) =>
+    api
+      .put<FocusBlock>(`/calendar/focus-blocks/${id}`, {
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.start !== undefined ? { start: patch.start } : {}),
+        ...(patch.end !== undefined ? { end: patch.end } : {}),
+        ...(patch.categoryId !== undefined ? { category_id: patch.categoryId } : {}),
+      })
+      .then((r) => r.data),
   deleteFocusBlock: (id: number) => api.delete(`/calendar/focus-blocks/${id}`),
   sideTasks: () => api.get<SideTask[]>("/side-tasks").then((r) => r.data),
-  createSideTask: (t: { title: string; estimateMinutes: number; start?: string | null; blocksWork?: boolean }) =>
+  createSideTask: (t: {
+    title: string;
+    estimateMinutes: number;
+    start?: string | null;
+    blocksWork?: boolean;
+    categoryId?: number | null;
+  }) =>
     api
       .post<SideTask>("/side-tasks", {
         title: t.title,
         estimate_minutes: t.estimateMinutes,
         start: t.start ?? null,
         blocks_work: t.blocksWork ?? true,
+        category_id: t.categoryId ?? null,
       })
       .then((r) => r.data),
   updateSideTask: (
@@ -328,6 +432,7 @@ export const calendarApi = {
       start?: string | null;
       blocksWork?: boolean;
       completed?: boolean;
+      categoryId?: number | null;
     },
   ) =>
     api
@@ -337,6 +442,7 @@ export const calendarApi = {
         ...(patch.start !== undefined ? { start: patch.start } : {}),
         ...(patch.blocksWork !== undefined ? { blocks_work: patch.blocksWork } : {}),
         ...(patch.completed !== undefined ? { completed: patch.completed } : {}),
+        ...(patch.categoryId !== undefined ? { category_id: patch.categoryId } : {}),
       })
       .then((r) => r.data),
   deleteSideTask: (id: number) => api.delete(`/side-tasks/${id}`),
@@ -435,7 +541,12 @@ export const useDisconnectAccount = () => useCalendarMutation((id: number) => ca
 export const usePurgeAccountEvents = () => useCalendarMutation((id: number) => calendarApi.purgeAccountEvents(id));
 export const useRestoreAccountEvents = () => useCalendarMutation((id: number) => calendarApi.restoreAccountEvents(id));
 export const useUpdateCalendarAccount = () =>
-  useCalendarMutation((args: { id: number; defaultWork: boolean }) => calendarApi.updateAccount(args.id, args.defaultWork));
+  useCalendarMutation((args: { id: number; defaultWork?: boolean; defaultCategoryId?: number | null }) =>
+    calendarApi.updateAccount(args.id, {
+      ...(args.defaultWork !== undefined ? { defaultWork: args.defaultWork } : {}),
+      ...(args.defaultCategoryId !== undefined ? { defaultCategoryId: args.defaultCategoryId } : {}),
+    }),
+  );
 export const useDeleteCalendarEvent = () =>
   useCalendarMutation((input: DeleteEventInput) => calendarApi.deleteEvent(input));
 /** Refresh every connected mailbox, or only the given one when an id is passed. */
@@ -446,28 +557,58 @@ export const useSyncCalendars = () =>
 export const useTagEvent = () => useCalendarMutation((input: TagEventInput) => calendarApi.tag(input));
 export const useMoveEvent = () =>
   useCalendarMutation((input: { cacheId: number; start: string; end: string }) => calendarApi.moveEvent(input));
+export const useCreateEvent = () =>
+  useCalendarMutation(
+    (input: { title: string; start: string; end: string; allDay?: boolean; categoryId?: number | null }) =>
+      calendarApi.createEvent(input),
+  );
+export const useUpdateCalendarEvent = () =>
+  useCalendarMutation(
+    (input: {
+      cacheId: number;
+      title?: string;
+      start?: string;
+      end?: string;
+      allDay?: boolean;
+      categoryId?: number | null;
+    }) => calendarApi.updateEvent(input),
+  );
+export const useSetEventCategory = () =>
+  useCalendarMutation((input: { cacheId: number; categoryId: number | null; useDefault?: boolean }) =>
+    calendarApi.setEventCategory(input),
+  );
 export const useSetEventColor = () =>
   useCalendarMutation((input: { cacheId: number; color: string | null }) => calendarApi.setEventColor(input));
 export const useDuplicateEvent = () =>
   useCalendarMutation((cacheId: number) => calendarApi.duplicateEvent(cacheId));
 export const useSaveCalendarSettings = () => useCalendarMutation((s: CalendarSettings) => calendarApi.saveSettings(s));
 export const useCreateFocusBlock = () =>
-  useCalendarMutation((b: { title?: string; start: string; end: string }) => calendarApi.createFocusBlock(b));
+  useCalendarMutation((b: { title?: string; start: string; end: string; categoryId?: number | null }) =>
+    calendarApi.createFocusBlock(b),
+  );
 export const useUpdateFocusBlock = () =>
-  useCalendarMutation((args: { id: number; patch: { title?: string; start?: string; end?: string } }) =>
-    calendarApi.updateFocusBlock(args.id, args.patch),
+  useCalendarMutation(
+    (args: { id: number; patch: { title?: string; start?: string; end?: string; categoryId?: number | null } }) =>
+      calendarApi.updateFocusBlock(args.id, args.patch),
   );
 export const useDeleteFocusBlock = () => useCalendarMutation((id: number) => calendarApi.deleteFocusBlock(id));
 export const useCreateSideTask = () =>
   useCalendarMutation(
-    (t: { title: string; estimateMinutes: number; start?: string | null; blocksWork?: boolean }) =>
+    (t: { title: string; estimateMinutes: number; start?: string | null; blocksWork?: boolean; categoryId?: number | null }) =>
       calendarApi.createSideTask(t),
   );
 export const useUpdateSideTask = () =>
   useCalendarMutation(
     (args: {
       id: number;
-      patch: { title?: string; estimateMinutes?: number; start?: string | null; blocksWork?: boolean; completed?: boolean };
+      patch: {
+        title?: string;
+        estimateMinutes?: number;
+        start?: string | null;
+        blocksWork?: boolean;
+        completed?: boolean;
+        categoryId?: number | null;
+      };
     }) => calendarApi.updateSideTask(args.id, args.patch),
   );
 export const useDeleteSideTask = () => useCalendarMutation((id: number) => calendarApi.deleteSideTask(id));

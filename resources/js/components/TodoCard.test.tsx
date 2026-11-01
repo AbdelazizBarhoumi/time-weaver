@@ -108,6 +108,7 @@ function renderCard(props: Partial<Parameters<typeof TodoCard>[0]> = {}) {
   return render(
     <TodoCard
       tasks={[]}
+      categories={[]}
       now={now}
       coachContext={context}
       placingId={null}
@@ -158,6 +159,7 @@ describe("TodoCard", () => {
         estimate_minutes: 45,
         start: null,
         blocks_work: true,
+        category_id: null,
       }),
     );
   });
@@ -176,6 +178,7 @@ describe("TodoCard", () => {
         estimate_minutes: 30,
         start: null,
         blocks_work: false,
+        category_id: null,
       }),
     );
   });
@@ -345,7 +348,11 @@ describe("TodoCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "save" }));
 
     await waitFor(() =>
-      expect(put).toHaveBeenCalledWith("/side-tasks/1", { title: "Vacuum the room", estimate_minutes: 45 }),
+      expect(put).toHaveBeenCalledWith("/side-tasks/1", {
+        title: "Vacuum the room",
+        estimate_minutes: 45,
+        category_id: null,
+      }),
     );
   });
 
@@ -378,6 +385,7 @@ describe("TodoCard", () => {
     rerender(
       <TodoCard
         tasks={[task()]}
+        categories={[]}
         now={new Date(2026, 9, 14, 16, 0, 0, 0).getTime()}
         coachContext={context}
         placingId={null}

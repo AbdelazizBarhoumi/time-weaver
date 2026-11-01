@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Throwable;
 
 class SideTaskController extends Controller
@@ -25,6 +26,7 @@ class SideTaskController extends Controller
     public function index(Request $request): JsonResponse
     {
         $tasks = $request->user()->sideTasks()
+            ->with('category')
             ->orderBy('id')
             ->get()
             ->map(fn (SideTask $task) => $task->toApi());
@@ -39,11 +41,13 @@ class SideTaskController extends Controller
             'estimate_minutes' => ['required', 'integer', 'min:1', 'max:'.self::MAX_ESTIMATE_MINUTES],
             'start' => ['nullable', 'date'],
             'blocks_work' => ['sometimes', 'boolean'],
+            'category_id' => ['nullable', 'integer', Rule::exists('categories', 'id')->where('user_id', $request->user()->id)],
         ]);
 
         $start = isset($data['start']) ? Carbon::parse($data['start']) : null;
 
         $task = $request->user()->sideTasks()->create([
+            'category_id' => $data['category_id'] ?? null,
             'title' => trim($data['title']),
             'estimate_minutes' => $data['estimate_minutes'],
             'start' => $start,
@@ -51,6 +55,8 @@ class SideTaskController extends Controller
             'end' => $start?->copy()->addMinutes($data['estimate_minutes']),
             'blocks_work' => $data['blocks_work'] ?? true,
         ]);
+
+        $task->load('category');
 
         return response()->json($task->toApi(), 201);
     }
@@ -65,7 +71,12 @@ class SideTaskController extends Controller
             'start' => ['sometimes', 'nullable', 'date'],
             'blocks_work' => ['sometimes', 'boolean'],
             'completed' => ['sometimes', 'boolean'],
+            'category_id' => ['sometimes', 'nullable', 'integer', Rule::exists('categories', 'id')->where('user_id', $request->user()->id)],
         ]);
+
+        if (array_key_exists('category_id', $data)) {
+            $task->category_id = $data['category_id'];
+        }
 
         if (array_key_exists('title', $data)) {
             $task->title = trim($data['title']);
@@ -97,6 +108,7 @@ class SideTaskController extends Controller
         }
 
         $task->save();
+        $task->load('category');
 
         return response()->json($task->toApi());
     }

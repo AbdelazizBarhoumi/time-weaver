@@ -8,9 +8,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Ban, Briefcase, CalendarClock, CalendarOff, Check, Copy, MoreHorizontal, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Ban, Briefcase, CalendarClock, CalendarOff, Check, Copy, MoreHorizontal, Pencil, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { CategoryPicker } from "@/components/CategoryPicker";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SegmentBreakdown } from "@/components/SegmentBreakdown";
 import { allDayKeyMs, localDayKey, useBlockDrag, type DragControls, type DragEntity, type DragMode } from "@/lib/blockDrag";
@@ -20,6 +21,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -29,6 +33,7 @@ import {
   eventAccent,
   eventBackground,
   eventInterval,
+  eventTheme,
   hhmmToMinutes,
   isSideTaskDone,
   isWorkDay,
@@ -37,6 +42,7 @@ import {
   sessionBands,
   startOfDay,
   trackedMsOf,
+  type CalendarAccount,
   type CalendarEvent,
   type CalendarSession,
   type CalendarSettings,
@@ -47,6 +53,7 @@ import {
   type SideTask,
   type SuggestedSlot,
 } from "@/lib/calendar";
+import { categoryIcon, categoryTheme, type Category } from "@/lib/categories";
 import { formatHM, formatTime } from "@/lib/tracker";
 
 const HOUR_PX = 56;
@@ -63,6 +70,10 @@ interface Props {
   focusBlocks: FocusBlock[];
   /** Personal side tasks; placed ones are drawn as amber blocks on their day. */
   tasks: SideTask[];
+  /** The user's categories, used by every category picker and themed block. */
+  categories: Category[];
+  /** Mailboxes, so each event menu can offer its mailbox's default category. */
+  accounts?: CalendarAccount[];
   /** The task armed for click-to-place, if any. */
   placingId: number | null;
   /** Tracked work sessions to draw onto the grid, live ones included. */
@@ -78,8 +89,16 @@ interface Props {
   onDuplicateEvent: (e: CalendarEvent) => void;
   /** Override an event's color; null restores the automatic one. */
   onSetEventColor: (e: CalendarEvent, color: string | null) => void;
-  onCreateFocus: (start: Date, end: Date) => void;
+  /** Put an event in a category; null means no category. `useDefault` hands it
+   * back to the mailbox's default category. */
+  onSetEventCategory: (e: CalendarEvent, categoryId: number | null, useDefault?: boolean) => void;
+  /** Open the event dialog for an event saved in Time Weaver. */
+  onEditEvent: (e: CalendarEvent) => void;
+  /** Drag empty space: ask the page for a new local event at this slot. */
+  onCreateEvent: (start: Date, end: Date) => void;
   onDeleteFocus: (b: FocusBlock) => void;
+  /** Put a focus block in a category; null removes it. */
+  onSetFocusCategory: (b: FocusBlock, categoryId: number | null) => void;
   onStartFocus: (b: FocusBlock) => void;
   onLogWork?: (start: Date, end: Date) => void;
   onDeleteSession: (s: CalendarSession) => void;
@@ -188,7 +207,7 @@ export function CalendarView(props: Props) {
             {tz.split("/").pop()}
           </div>
           {Array.from({ length: dayCount }, (_, i) => addDays(firstDay, i)).map((d) => (
-            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} onDeleteEvent={props.onDeleteEvent} onDuplicateEvent={props.onDuplicateEvent} onSetEventColor={props.onSetEventColor} drag={drag} />
+            <DayHeader key={d.toISOString()} day={d} now={now} settings={settings} events={allDay} categories={props.categories} accounts={props.accounts} onDeleteEvent={props.onDeleteEvent} onDuplicateEvent={props.onDuplicateEvent} onSetEventCategory={props.onSetEventCategory} onSetEventColor={props.onSetEventColor} onEditEvent={props.onEditEvent} drag={drag} />
           ))}
         </div>
 
@@ -271,22 +290,30 @@ export function CalendarView(props: Props) {
 }
 
 /**
- * The event's "…" menu: duplicate it, recolor it, or delete it. The delete
- * section separates a normal delete (which a later sync can undo) from a
- * permanent one (which it cannot), and — for a recurring event — offers the
- * same choice for the whole series.
+ * The event's "…" menu: duplicate it, put it in a category, recolor it, or
+ * delete it. The delete section separates a normal delete (which a later sync
+ * can undo) from a permanent one (which it cannot), and — for a recurring
+ * event — offers the same choice for the whole series.
  */
 function EventActionsMenu({
   event,
+  categories,
+  accounts = [],
   onDuplicate,
+  onSetCategory,
   onSetColor,
+  onEdit,
   onDelete,
   className,
   iconClassName = "h-3 w-3",
 }: {
   event: CalendarEvent;
+  categories: Category[];
+  accounts?: CalendarAccount[] | undefined;
   onDuplicate: (e: CalendarEvent) => void;
+  onSetCategory: (e: CalendarEvent, categoryId: number | null, useDefault?: boolean) => void;
   onSetColor: (e: CalendarEvent, color: string | null) => void;
+  onEdit: (e: CalendarEvent) => void;
   onDelete: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
   className?: string;
   iconClassName?: string;
@@ -296,6 +323,13 @@ function EventActionsMenu({
   const [open, setOpen] = useState(false);
   // Only a color the user picked is "selected"; Google's own color is not one of ours.
   const current = event.hasCustomColor ? event.color?.toLowerCase() ?? null : null;
+  const currentCategory = event.category?.id ?? null;
+  const CurrentIcon = categoryIcon(event.category?.icon);
+  const accountDefault = accounts.find((account) => account.id === event.accountId)?.defaultCategory ?? null;
+  const categorySource = event.categorySource ?? (event.category ? "event" : null);
+  const usesAccountDefault = categorySource === "account";
+  const hasOwnChoice = categorySource === "event";
+  const DefaultIcon = accountDefault ? categoryIcon(accountDefault.icon) : null;
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -325,6 +359,51 @@ function EventActionsMenu({
         <DropdownMenuItem onSelect={() => onDuplicate(event)}>
           <Copy className="h-3 w-3" /> Duplicate
         </DropdownMenuItem>
+        {event.isLocal && (
+          <DropdownMenuItem onSelect={() => onEdit(event)}>
+            <Pencil className="h-3 w-3" /> Edit event
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            {event.category ? (
+              <CurrentIcon className="h-3 w-3" style={{ color: event.category.color }} />
+            ) : (
+              <span className="h-3 w-3 rounded-full border border-line" />
+            )}
+            <span className="truncate">{event.category?.name ?? "No category"}</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-56">
+            {accountDefault && (
+              <DropdownMenuItem onSelect={() => onSetCategory(event, null, true)}>
+                {DefaultIcon ? (
+                  <DefaultIcon className="h-3 w-3" style={{ color: accountDefault.color }} />
+                ) : (
+                  <span className="h-3 w-3 rounded-full border border-line" />
+                )}
+                <span className="flex-1 truncate">Mailbox default</span>
+                <span className="max-w-[70px] truncate font-mono text-[9px] text-mut">{accountDefault.name}</span>
+                {usesAccountDefault && <Check className="h-3 w-3" />}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem onSelect={() => onSetCategory(event, null)}>
+              <span className={cn("flex h-3 w-3 items-center justify-center", !hasOwnChoice || currentCategory !== null ? "opacity-0" : "")}>
+                <Check className="h-3 w-3" />
+              </span>
+              No category
+            </DropdownMenuItem>
+            {categories.map((category) => {
+              const Icon = categoryIcon(category.icon);
+              return (
+                <DropdownMenuItem key={category.id} onSelect={() => onSetCategory(event, category.id)}>
+                  <Icon className="h-3 w-3" style={{ color: category.color }} />
+                  <span className="flex-1 truncate">{category.name}</span>
+                  {hasOwnChoice && currentCategory === category.id && <Check className="h-3 w-3" />}
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuLabel className="pb-1 pt-2 text-[10px] font-mono uppercase tracking-widest text-mut">
           Color
         </DropdownMenuLabel>
@@ -412,18 +491,26 @@ function DayHeader({
   now,
   settings,
   events,
+  categories,
+  accounts,
   onDeleteEvent,
   onDuplicateEvent,
+  onSetEventCategory,
   onSetEventColor,
+  onEditEvent,
   drag,
 }: {
   day: Date;
   now: number;
   settings: CalendarSettings;
   events: CalendarEvent[];
+  categories: Category[];
+  accounts?: CalendarAccount[] | undefined;
   onDeleteEvent: (e: CalendarEvent, scope: DeleteScope, permanent: boolean) => void;
   onDuplicateEvent: (e: CalendarEvent) => void;
+  onSetEventCategory: (e: CalendarEvent, categoryId: number | null, useDefault?: boolean) => void;
   onSetEventColor: (e: CalendarEvent, color: string | null) => void;
+  onEditEvent: (e: CalendarEvent) => void;
   drag: DragControls;
 }) {
   const isToday = sameDay(day, new Date(now));
@@ -473,27 +560,40 @@ function DayHeader({
         <span className={cn("text-base font-semibold", isToday ? "text-neon" : "text-ink")}>{day.getDate()}</span>
         {!working && <span className="ml-1 text-[9px] uppercase text-mut/70">off</span>}
       </div>
-      {dayAllDay.slice(0, 3).map((e) => (
-        <div
-          key={e.id}
-          onPointerDown={(event) => beginAllDayDrag(event, e)}
-          className={cn(
-            "group relative mt-1 flex cursor-grab touch-none items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink",
-            drag.active?.entity.key === e.id && drag.active.entity.allDay && "opacity-40",
-          )}
-          style={{ background: eventBackground(e, "33"), borderLeft: `3px solid ${eventAccent(e)}` }}
-          title={`${e.title} · ${e.accountEmail} · Drag to another day`}
-        >
-          <span className="truncate">{e.title}</span>
-          <EventActionsMenu
-            event={e}
-            onDuplicate={onDuplicateEvent}
-            onSetColor={onSetEventColor}
-            onDelete={onDeleteEvent}
-            className="ml-auto shrink-0 rounded p-0.5 text-mut/60 hover:text-ink"
-          />
-        </div>
-      ))}
+      {dayAllDay.slice(0, 3).map((e) => {
+        const themed = eventTheme(e);
+        const Icon = categoryIcon(e.category?.icon);
+        return (
+          <div
+            key={e.id}
+            onPointerDown={(event) => beginAllDayDrag(event, e)}
+            className={cn(
+              "group relative mt-1 flex cursor-grab touch-none items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] text-ink",
+              drag.active?.entity.key === e.id && drag.active.entity.allDay && "opacity-40",
+            )}
+            style={{
+              background: themed?.background ?? eventBackground(e, "33"),
+              borderLeft: themed?.borderLeft ?? `3px solid ${eventAccent(e)}`,
+              boxShadow: themed?.boxShadow,
+            }}
+            title={`${e.title}${e.category ? ` · ${e.category.name}` : ""} · ${e.accountEmail} · Drag to another day`}
+          >
+            {e.category && <Icon className="h-3 w-3 shrink-0" style={{ color: themed?.accent }} />}
+            <span className="truncate">{e.title}</span>
+            <EventActionsMenu
+              event={e}
+              categories={categories}
+              accounts={accounts}
+              onDuplicate={onDuplicateEvent}
+              onSetCategory={onSetEventCategory}
+              onSetColor={onSetEventColor}
+              onEdit={onEditEvent}
+              onDelete={onDeleteEvent}
+              className="ml-auto shrink-0 rounded p-0.5 text-mut/60 hover:text-ink"
+            />
+          </div>
+        );
+      })}
       {dayAllDay.length > 3 && <div className="mt-1 font-mono text-[10px] text-mut">+{dayAllDay.length - 3} more</div>}
     </div>
   );
@@ -584,7 +684,7 @@ function DayColumn(
       return;
     }
     if (en - s < SNAP_MIN) return;
-    props.onCreateFocus(new Date(dayStart + s * 60_000), new Date(dayStart + en * 60_000));
+    props.onCreateEvent(new Date(dayStart + s * 60_000), new Date(dayStart + en * 60_000));
   };
 
   /** Start moving a block, remembering how far into it the pointer grabbed. */
@@ -773,21 +873,34 @@ function DayColumn(
           const t = item.task;
           const done = isSideTaskDone(t, now);
           const entity: DragEntity = { kind: "task", key: `t-${t.id}`, allDay: false, start: iv.start, end: iv.end, payload: t };
+          const theme = t.category ? categoryTheme(t.category, "#fbbf24") : null;
+          const TaskIcon = t.category ? categoryIcon(t.category.icon) : Briefcase;
           return (
             <div
               key={entity.key}
               onPointerDown={(event) => beginBlockMove(event, entity)}
               className={cn(
-                "group absolute touch-none cursor-grab overflow-hidden rounded border border-amber-400/70 bg-amber-400/15 px-1.5 py-1 text-[11px] text-ink",
+                "group absolute touch-none cursor-grab overflow-hidden rounded border px-1.5 py-1 text-[11px] text-ink",
+                theme ? "border-line" : "border-amber-400/70 bg-amber-400/15",
                 done && "opacity-60",
                 isDragSource(entity.key) && "opacity-40",
               )}
-              style={style}
+              style={
+                theme
+                  ? { ...style, background: theme.background, borderLeft: theme.borderLeft, boxShadow: theme.boxShadow }
+                  : style
+              }
               title={`${t.title} · ${formatHM(t.estimateMinutes * 60_000)}${
-                t.blocksWork ? " · blocks work" : " · flexible"
-              }${t.completedAt ? ` · finished ${formatTime(t.completedAt)}` : ""} · Drag to reschedule`}
+                t.category ? ` · ${t.category.name}` : ""
+              }${t.blocksWork ? " · blocks work" : " · flexible"}${
+                t.completedAt ? ` · finished ${formatTime(t.completedAt)}` : ""
+              } · Drag to reschedule`}
             >
-              <div className="flex items-center gap-1 font-medium text-amber-300">
+              <div
+                className={cn("flex items-center gap-1 font-medium", theme ? "" : "text-amber-300")}
+                style={theme ? { color: theme.accent } : undefined}
+              >
+                <TaskIcon className="h-3 w-3 shrink-0" />
                 <span className="truncate" style={done ? { textDecoration: "line-through" } : undefined}>
                   {t.title}
                 </span>
@@ -851,24 +964,43 @@ function DayColumn(
         if (item.kind === "focus" && item.block) {
           const b = item.block;
           const entity: DragEntity = { kind: "focus", key: `f-${b.id}`, allDay: false, start: iv.start, end: iv.end, payload: b };
+          const theme = b.category ? categoryTheme(b.category, "#22d3ee") : null;
+          const FocusIcon = b.category ? categoryIcon(b.category.icon) : Briefcase;
           return (
             <div
               key={entity.key}
               onPointerDown={(event) => beginBlockMove(event, entity)}
               className={cn(
-                "group absolute touch-none cursor-grab overflow-hidden rounded border border-neon bg-l1 px-1.5 py-1 text-[11px] text-ink shadow",
+                "group absolute touch-none cursor-grab overflow-hidden rounded border px-1.5 py-1 text-[11px] text-ink shadow",
+                theme ? "border-line" : "border-neon bg-l1",
                 isDragSource(entity.key) && "opacity-40",
               )}
-              style={style}
-              title={`${b.title} · Drag to reschedule`}
+              style={
+                theme
+                  ? { ...style, background: theme.background, borderLeft: theme.borderLeft, boxShadow: theme.boxShadow }
+                  : style
+              }
+              title={`${b.title}${b.category ? ` · ${b.category.name}` : ""} · Drag to reschedule`}
             >
-              <div className="flex items-center gap-1 font-medium text-neon">
-                <Briefcase className="h-3 w-3" /> <span className="truncate">{b.title}</span>
+              <div
+                className={cn("flex items-center gap-1 font-medium", theme ? "" : "text-neon")}
+                style={theme ? { color: theme.accent } : undefined}
+              >
+                <FocusIcon className="h-3 w-3" /> <span className="truncate">{b.title}</span>
               </div>
               <div className="font-mono text-[10px] text-mut">
                 {formatTime(b.start)}–{formatTime(b.end)}
               </div>
               <div className="absolute right-1 top-1 hidden gap-1 group-hover:flex">
+                <CategoryPicker
+                  categories={props.categories}
+                  value={b.category?.id ?? null}
+                  onChange={(categoryId) => props.onSetFocusCategory(b, categoryId)}
+                  compact
+                  align="end"
+                  className="bg-panel/90 px-1 py-0.5"
+                  title="Focus category"
+                />
                 <button
                   className="rounded bg-neon p-0.5 text-void"
                   title="Start timer for this block"
@@ -892,6 +1024,8 @@ function DayColumn(
         const e = item.event;
         if (!e) return null;
         const entity: DragEntity = { kind: "event", key: e.id, allDay: false, start: iv.start, end: iv.end, payload: e };
+        const themed = eventTheme(e);
+        const EventIcon = categoryIcon(e.category?.icon);
         return (
           <div
             key={entity.key}
@@ -913,8 +1047,8 @@ function DayColumn(
               ev.preventDefault();
               props.onResetWork(e);
             }}
-            title={`${e.title}\n${e.accountEmail}${e.calendarName ? ` · ${e.calendarName}` : ""}${
-              e.isLocal ? "\nCopied event — saved here only, not in Google" : ""
+            title={`${e.title}${e.category ? ` · ${e.category.name}` : ""}\n${e.accountEmail}${e.calendarName ? ` · ${e.calendarName}` : ""}${
+              e.isLocal ? "\nSaved here only, not in Google" : ""
             }\nDrag to reschedule · Click: ${e.isWork ? "not work" : "mark as work"} · Right-click: back to automatic`}
             className={cn(
               "group absolute cursor-grab touch-none overflow-hidden rounded px-1.5 py-1 text-left text-[11px] text-ink transition hover:brightness-125",
@@ -923,13 +1057,15 @@ function DayColumn(
             )}
             style={{
               ...style,
-              // A color the user picked wins over the neutral work fill; the ring
-              // and briefcase still mark the event as work.
-              background: e.hasCustomColor || !e.isWork ? eventBackground(e) : "var(--l2)",
-              borderLeft: `3px solid ${e.hasCustomColor || !e.isWork ? eventAccent(e) : "var(--neon)"}`,
+              // A category or a color the user picked wins over the neutral work
+              // fill; the ring and briefcase still mark the event as work.
+              background: themed?.background ?? (e.hasCustomColor || !e.isWork ? eventBackground(e) : "var(--l2)"),
+              borderLeft: themed?.borderLeft ?? (e.hasCustomColor || !e.isWork ? `3px solid ${eventAccent(e)}` : "3px solid var(--neon)"),
+              boxShadow: themed?.boxShadow,
             }}
           >
             <div className="flex items-center gap-1 font-medium">
+              {e.category && <EventIcon className="h-3 w-3 shrink-0" style={{ color: themed?.accent }} />}
               {e.isWork && <Briefcase className="h-3 w-3 shrink-0 text-neon" />}
               <span className="truncate">{e.title}</span>
             </div>
@@ -941,8 +1077,12 @@ function DayColumn(
             </div>
             <EventActionsMenu
               event={e}
+              categories={props.categories}
+              accounts={props.accounts}
               onDuplicate={props.onDuplicateEvent}
+              onSetCategory={props.onSetEventCategory}
               onSetColor={props.onSetEventColor}
+              onEdit={props.onEditEvent}
               onDelete={props.onDeleteEvent}
               className="absolute right-0.5 top-0.5 rounded bg-panel/80 p-0.5 text-mut/60 hover:text-ink"
             />

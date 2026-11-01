@@ -6,6 +6,7 @@ use App\Models\FocusBlock;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class FocusBlockController extends Controller
@@ -15,6 +16,7 @@ class FocusBlockController extends Controller
         $request->validate(['from' => 'required|date', 'to' => 'required|date|after:from']);
 
         $blocks = $request->user()->focusBlocks()
+            ->with('category')
             ->where('end', '>', $request->date('from'))
             ->where('start', '<', $request->date('to'))
             ->orderBy('start')
@@ -30,13 +32,17 @@ class FocusBlockController extends Controller
             'title' => 'nullable|string|max:255',
             'start' => 'required|date',
             'end' => 'required|date|after:start',
+            'category_id' => ['nullable', 'integer', Rule::exists('categories', 'id')->where('user_id', $request->user()->id)],
         ]);
 
         $block = $request->user()->focusBlocks()->create([
+            'category_id' => $data['category_id'] ?? null,
             'title' => $data['title'] ?? 'Focus block',
             'start' => $data['start'],
             'end' => $data['end'],
         ]);
+
+        $block->load('category');
 
         return response()->json($block->toApi(), 201);
     }
@@ -49,6 +55,7 @@ class FocusBlockController extends Controller
             'title' => 'sometimes|string|max:255',
             'start' => 'sometimes|date',
             'end' => 'sometimes|date',
+            'category_id' => ['sometimes', 'nullable', 'integer', Rule::exists('categories', 'id')->where('user_id', $request->user()->id)],
         ]);
 
         // Dragging either edge keeps the block sane: the effective start must
@@ -72,7 +79,12 @@ class FocusBlockController extends Controller
             $block->end = $data['end'];
         }
 
+        if (array_key_exists('category_id', $data)) {
+            $block->category_id = $data['category_id'];
+        }
+
         $block->save();
+        $block->load('category');
 
         return response()->json($block->toApi());
     }

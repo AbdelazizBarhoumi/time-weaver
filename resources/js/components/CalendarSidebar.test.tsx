@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { render, screen, fireEvent } from "@/test/utils";
 import { AccountsCard, StudyCard } from "@/components/CalendarSidebar";
 import type { CalendarAccount } from "@/lib/calendar";
+import type { Category } from "@/lib/categories";
 
 /** Wednesday, midday. */
 const at = (hour: number, minute = 0): string => new Date(2026, 9, 14, hour, minute).toISOString();
@@ -63,11 +65,13 @@ const mailbox = (overrides: Partial<CalendarAccount> = {}): CalendarAccount => (
 function renderAccountsCard(overrides: Partial<Parameters<typeof AccountsCard>[0]> = {}) {
   const props = {
     accounts: [mailbox()],
+    categories: [],
     hidden: new Set<number>(),
     syncing: false,
     syncingAccountId: null,
     onToggleVisibility: vi.fn(),
     onToggleDefaultWork: vi.fn(),
+    onSetDefaultCategory: vi.fn(),
     onSync: vi.fn(),
     onPurge: vi.fn(),
     onRestoreHidden: vi.fn(),
@@ -108,5 +112,30 @@ describe("AccountsCard", () => {
     renderAccountsCard({ syncing: true, syncingAccountId: 1 });
 
     expect(screen.getByTitle("Sync this mailbox now")).toBeDisabled();
+  });
+
+  it("gives a mailbox a default category", async () => {
+    const user = userEvent.setup();
+    const category: Category = { id: 7, name: "Work", color: "#a78bfa", icon: "Briefcase", style: "solid" };
+    const props = renderAccountsCard({ categories: [category] });
+
+    await user.click(screen.getByTitle("None"));
+    await user.click(await screen.findByRole("button", { name: /Work/ }));
+
+    expect(props.onSetDefaultCategory).toHaveBeenCalledWith(1, 7);
+  });
+
+  it("clears a mailbox's default category", async () => {
+    const user = userEvent.setup();
+    const category: Category = { id: 7, name: "Work", color: "#a78bfa", icon: "Briefcase", style: "solid" };
+    const props = renderAccountsCard({
+      accounts: [mailbox({ defaultCategory: category })],
+      categories: [category],
+    });
+
+    await user.click(screen.getByTitle("Category: Work"));
+    await user.click(await screen.findByRole("button", { name: /No category/ }));
+
+    expect(props.onSetDefaultCategory).toHaveBeenCalledWith(1, null);
   });
 });

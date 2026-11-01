@@ -13,7 +13,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { CategoryPicker } from "@/components/CategoryPicker";
 import { cn } from "@/lib/utils";
+import { categoryIcon, type Category } from "@/lib/categories";
 import {
   SIDE_TASK_DRAG_TYPE,
   isSideTaskDone,
@@ -53,13 +55,17 @@ function clampMinutes(value: number): number {
 
 export function TodoCard({
   tasks,
+  categories,
   now,
   coachContext,
   placingId,
   onTogglePlacing,
   onDelete,
+  onManageCategories,
 }: {
   tasks: SideTask[];
+  /** The user's categories, offered on the add form and each task. */
+  categories: Category[];
   now: number;
   /** Fresh snapshot sent with an AI planning request. */
   coachContext: CoachContext;
@@ -69,15 +75,19 @@ export function TodoCard({
   onTogglePlacing: (task: SideTask) => void;
   /** Deleting asks for confirmation, which the page owns. */
   onDelete: (task: SideTask) => void;
+  /** Open the category manager from a picker. */
+  onManageCategories?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [minutes, setMinutes] = useState(30);
   const [blocksWork, setBlocksWork] = useState(true);
+  const [categoryId, setCategoryId] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<CoachPlanSuggestion[]>([]);
   const [planNote, setPlanNote] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editMinutes, setEditMinutes] = useState(30);
+  const [editCategoryId, setEditCategoryId] = useState<number | null>(null);
 
   const coachStatus = useCoachStatus();
   const create = useCreateSideTask();
@@ -94,10 +104,11 @@ export function TodoCard({
     if (title === "") return;
 
     create.mutate(
-      { title, estimateMinutes: clampMinutes(minutes), blocksWork },
+      { title, estimateMinutes: clampMinutes(minutes), blocksWork, categoryId },
       {
         onSuccess: () => {
           setDraft("");
+          setCategoryId(null);
           toast.success(`Added "${title}"`);
         },
         onError: () => toast.error("Could not add that task."),
@@ -135,6 +146,7 @@ export function TodoCard({
     setEditingId(task.id);
     setEditTitle(task.title);
     setEditMinutes(task.estimateMinutes);
+    setEditCategoryId(task.category?.id ?? null);
   };
 
   const cancelEdit = () => setEditingId(null);
@@ -144,7 +156,10 @@ export function TodoCard({
     if (title === "") return;
 
     update.mutate(
-      { id: task.id, patch: { title, estimateMinutes: clampMinutes(editMinutes) } },
+      {
+        id: task.id,
+        patch: { title, estimateMinutes: clampMinutes(editMinutes), categoryId: editCategoryId },
+      },
       {
         onSuccess: () => {
           setEditingId(null);
@@ -215,6 +230,7 @@ export function TodoCard({
           {live.map((task) => {
             const armed = placingId === task.id;
             const editing = editingId === task.id;
+            const CategoryIcon = task.category ? categoryIcon(task.category.icon) : null;
             return (
               <li
                 key={task.id}
@@ -269,6 +285,13 @@ export function TodoCard({
                         />
                         est
                       </label>
+                      <CategoryPicker
+                        categories={categories}
+                        value={editCategoryId}
+                        onChange={setEditCategoryId}
+                        onManage={onManageCategories}
+                        title="Category"
+                      />
                       <Button
                         variant="outline"
                         size="sm"
@@ -304,6 +327,16 @@ export function TodoCard({
 
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm text-ink">{task.title}</div>
+                      {task.category && (
+                        <div
+                          className="flex items-center gap-1 truncate text-[10px]"
+                          style={{ color: task.category.color }}
+                          title={`Category: ${task.category.name}`}
+                        >
+                          {CategoryIcon && <CategoryIcon className="h-3 w-3 shrink-0" />}
+                          <span className="truncate">{task.category.name}</span>
+                        </div>
+                      )}
                       <div className="font-mono text-[10px] text-mut">
                         {formatHM(task.estimateMinutes * 60_000)}
                         {" · "}
@@ -432,6 +465,14 @@ export function TodoCard({
             />
             blocks work
           </label>
+          <CategoryPicker
+            categories={categories}
+            value={categoryId}
+            onChange={setCategoryId}
+            onManage={onManageCategories}
+            title="Category"
+            className="ml-auto"
+          />
         </div>
 
         {unplaced.length > 0 && (

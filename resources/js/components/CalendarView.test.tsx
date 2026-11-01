@@ -2,7 +2,15 @@ import { describe, it, expect, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { render, screen, fireEvent } from "@/test/utils";
 import { CalendarView } from "@/components/CalendarView";
-import { SIDE_TASK_DRAG_TYPE, type CalendarEvent, type CalendarSettings, type FocusBlock, type SideTask } from "@/lib/calendar";
+import {
+  SIDE_TASK_DRAG_TYPE,
+  type CalendarAccount,
+  type CalendarEvent,
+  type CalendarSettings,
+  type FocusBlock,
+  type SideTask,
+} from "@/lib/calendar";
+import type { Category } from "@/lib/categories";
 
 const settings: CalendarSettings = {
   workStart: "09:00",
@@ -62,6 +70,18 @@ function focusBlock(overrides: Partial<FocusBlock> = {}): FocusBlock {
   return { id: 11, title: "Deep work", start: at(15), end: at(16), ...overrides };
 }
 
+/** A mailbox, so an event menu can offer its default category. */
+function calendarAccount(overrides: Partial<CalendarAccount> = {}): CalendarAccount {
+  return {
+    id: 1,
+    provider: "google",
+    email: "me@example.com",
+    color: "#5b9cff",
+    defaultWork: false,
+    ...overrides,
+  };
+}
+
 const noop = () => {};
 
 function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
@@ -74,6 +94,7 @@ function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
       events={[]}
       focusBlocks={[]}
       tasks={[]}
+      categories={[]}
       placingId={null}
       sessions={[]}
       todaySlots={[]}
@@ -83,8 +104,11 @@ function renderView(props: Partial<Parameters<typeof CalendarView>[0]> = {}) {
       onDeleteEvent={noop}
       onDuplicateEvent={noop}
       onSetEventColor={noop}
-      onCreateFocus={noop}
+      onSetEventCategory={noop}
+      onEditEvent={noop}
+      onCreateEvent={noop}
       onDeleteFocus={noop}
+      onSetFocusCategory={noop}
       onStartFocus={noop}
       onDeleteSession={noop}
       onPlaceTask={noop}
@@ -247,9 +271,9 @@ describe("CalendarView side tasks", () => {
     );
   });
 
-  it("starts a focus block instead of placing when no task is armed", () => {
-    const onCreateFocus = vi.fn();
-    renderView({ onCreateFocus });
+  it("opens the event dialog instead of placing when no task is armed", () => {
+    const onCreateEvent = vi.fn();
+    renderView({ onCreateEvent });
 
     const column = dayColumn();
     // Drag from 09:00 down to 12:00.
@@ -257,7 +281,7 @@ describe("CalendarView side tasks", () => {
     fireEvent.mouseMove(column, { clientY: 168 });
     fireEvent.mouseUp(column, { clientY: 168 });
 
-    expect(onCreateFocus).toHaveBeenCalledWith(new Date(2026, 9, 14, 9, 0), new Date(2026, 9, 14, 12, 0));
+    expect(onCreateEvent).toHaveBeenCalledWith(new Date(2026, 9, 14, 9, 0), new Date(2026, 9, 14, 12, 0));
   });
 
   it("shows a hint while a task is armed, and leaves on Esc", () => {
@@ -388,9 +412,58 @@ describe("CalendarView event actions", () => {
     expect(screen.getByTitle(/Standup/)).toHaveStyle({ borderLeft: "3px solid #34d399" });
   });
 
+  it("paints an event with its category theme and icon", () => {
+    const category: Category = { id: 2, name: "Deep work", color: "#a78bfa", icon: "Briefcase", style: "solid" };
+    renderView({ categories: [category], events: [calendarEvent({ isWork: true, category })] });
+
+    const block = screen.getByTitle(/Standup/);
+    expect(block).toHaveStyle({ borderLeft: "3px solid #a78bfa" });
+    expect(block.getAttribute("title")).toContain("Deep work");
+  });
+
+  it("lists the user's categories in an event's menu", async () => {
+    const user = userEvent.setup();
+    const category: Category = { id: 2, name: "Deep work", color: "#a78bfa", icon: "Briefcase", style: "solid" };
+    renderView({ categories: [category], events: [calendarEvent()] });
+
+    await user.click(screen.getByRole("button", { name: "Event actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: /No category/ }));
+
+    expect(await screen.findByRole("menuitem", { name: /Deep work/ })).toBeInTheDocument();
+  });
+
   it("marks a copied event as local", () => {
     renderView({ events: [calendarEvent({ isLocal: true })] });
 
     expect(screen.getByText(/copy/)).toBeInTheDocument();
+  });
+
+  it("offers the mailbox default so an event can go back to it", async () => {
+    const user = userEvent.setup();
+    const category: Category = { id: 2, name: "Work", color: "#a78bfa", icon: "Briefcase", style: "solid" };
+    const onSetEventCategory = vi.fn();
+    renderView({
+      accounts: [calendarAccount({ defaultCategory: category })],
+      categories: [category],
+      events: [calendarEvent({ category, categorySource: "account", isWork: true })],
+      onSetEventCategory,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Event actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Work/ }));
+    // Radix's submenu items only select on a plain click under the test DOM.
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Mailbox default/ }));
+
+    expect(onSetEventCategory).toHaveBeenCalledWith(expect.objectContaining({ cacheId: 9 }), null, true);
+  });
+
+  it("hides the mailbox default when the mailbox does not set one", async () => {
+    const user = userEvent.setup();
+    renderView({ accounts: [calendarAccount()], events: [calendarEvent()] });
+
+    await user.click(screen.getByRole("button", { name: "Event actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: /No category/ }));
+
+    expect(screen.queryByRole("menuitem", { name: /Mailbox default/ })).not.toBeInTheDocument();
   });
 });

@@ -9,6 +9,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class CalendarAccountController extends Controller
@@ -22,13 +24,15 @@ class CalendarAccountController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $accounts = $request->user()->calendarAccounts()->withCount('dismissals')->get()
+        $accounts = $request->user()->calendarAccounts()->with('defaultCategory')->withCount('dismissals')->get()
             ->map(fn (CalendarAccount $account) => [
                 'id' => $account->id,
                 'provider' => $account->provider,
                 'email' => $account->email,
                 'color' => $account->color,
                 'defaultWork' => $account->default_work,
+                // Every event from this mailbox inherits this category.
+                'defaultCategory' => $account->defaultCategory?->toApi(),
                 'lastSyncedAt' => $account->last_synced_at?->toISOString(),
                 'disconnected' => $account->disconnected_at !== null,
                 // Events deleted for good, which a sync will not bring back.
@@ -39,21 +43,44 @@ class CalendarAccountController extends Controller
     }
 
     /**
-     * Toggle the per-mailbox default: count every timed event as work unless the
-     * user has manually tagged it otherwise.
+     * Change what a mailbox means by default: whether every timed event counts
+     * as work, and which category its events inherit.
      */
     public function update(Request $request, int $accountId): JsonResponse
     {
         $data = $request->validate([
-            'default_work' => 'required|boolean',
+            'default_work' => ['sometimes', 'boolean'],
+            'default_category_id' => [
+                'sometimes',
+                'nullable',
+                'integer',
+                Rule::exists('categories', 'id')->where('user_id', $request->user()->id),
+            ],
         ]);
 
+        if ($data === []) {
+            throw ValidationException::withMessages([
+                'account' => 'Send a default work flag or a default category.',
+            ]);
+        }
+
         $account = $request->user()->calendarAccounts()->whereKey($accountId)->firstOrFail();
-        $account->update(['default_work' => $data['default_work']]);
+
+        if (array_key_exists('default_work', $data)) {
+            $account->default_work = $data['default_work'];
+        }
+
+        if (array_key_exists('default_category_id', $data)) {
+            $account->default_category_id = $data['default_category_id'];
+        }
+
+        $account->save();
+        $account->load('defaultCategory');
 
         return response()->json([
             'id' => $account->id,
             'defaultWork' => $account->default_work,
+            'defaultCategory' => $account->defaultCategory?->toApi(),
         ]);
     }
 

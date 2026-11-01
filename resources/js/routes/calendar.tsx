@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Tags } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -10,7 +10,10 @@ import { AccountsCard, BudgetCard, Legend, SettingsCard, StudyCard, WorkableTime
 import { DayIntelligenceCard } from "@/components/DayIntelligenceCard";
 import { CoachChatFab } from "@/components/CoachChatFab";
 import { TodoCard } from "@/components/TodoCard";
-import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
+import { CategoriesDialog } from "@/components/CategoriesDialog";
+import { EventDialog, type EventDraft } from "@/components/EventDialog";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { useCategories } from "@/lib/categories";
 import {
   addDays,
   blockingTaskIntervals,
@@ -31,6 +34,7 @@ import {
   useCalendarAccounts,
   useCalendarEvents,
   useCalendarSettings,
+  useCreateEvent,
   useCreateFocusBlock,
   useDeleteCalendarEvent,
   useDeleteFocusBlock,
@@ -40,11 +44,13 @@ import {
   useMoveEvent,
   usePurgeAccountEvents,
   useRestoreAccountEvents,
+  useSetEventCategory,
   useSetEventColor,
   useSideTasks,
   useSyncCalendars,
   useTagEvent,
   useUpdateCalendarAccount,
+  useUpdateCalendarEvent,
   useUpdateFocusBlock,
   useUpdateSideTask,
   type CalendarEvent,
@@ -117,6 +123,9 @@ function CalendarPage() {
   /** The side task armed for click-to-place, if any. */
   const [placingId, setPlacingId] = useState<number | null>(null);
   const [syncErrors, setSyncErrors] = useState<{ accountId: number; email: string; message: string }[]>([]);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
+  /** The event/focus draft open in the dialog, or null when it is closed. */
+  const [eventDraft, setEventDraft] = useState<EventDraft | null>(null);
 
   useEffect(() => {
     try {
@@ -160,12 +169,14 @@ function CalendarPage() {
   const deleteFocus = useDeleteFocusBlock();
   const moveFocus = useUpdateFocusBlock();
   const moveEvent = useMoveEvent();
+  const createEvent = useCreateEvent();
+  const updateCalendarEvent = useUpdateCalendarEvent();
+  const setEventCategory = useSetEventCategory();
   const updateTask = useUpdateSideTask();
   const deleteTask = useDeleteSideTask();
   const createSession = useCreateSession();
   const deleteSession = useDeleteSession();
   const confirm = useConfirm();
-  const prompt = usePrompt();
   const syncCalendars = useSyncCalendars();
   const purgeEvents = usePurgeAccountEvents();
   const restoreEvents = useRestoreAccountEvents();
@@ -173,6 +184,8 @@ function CalendarPage() {
   const duplicateEvent = useDuplicateEvent();
   const setEventColor = useSetEventColor();
   const updateAccount = useUpdateCalendarAccount();
+  const categoriesQ = useCategories();
+  const categories = categoriesQ.data ?? [];
 
   const settings = settingsQ.data ?? DEFAULT_SETTINGS;
   const allEvents = eventsQ.data?.events ?? [];
@@ -500,6 +513,119 @@ function CalendarPage() {
     );
   };
 
+  /**
+   * Put one occurrence in a category. Null clears it, while `useDefault` hands
+   * it back to the mailbox's default category.
+   */
+  const categorizeCalendarEvent = (event: CalendarEvent, categoryId: number | null, useDefault = false) => {
+    setEventCategory.mutate(
+      { cacheId: event.cacheId, categoryId, useDefault },
+      {
+        onSuccess: () =>
+          toast.success(
+            useDefault
+              ? `"${event.title}" now uses its mailbox default`
+              : categoryId === null
+                ? `Cleared the category on "${event.title}"`
+                : `Categorized "${event.title}"`,
+          ),
+        onError: () => toast.error("Could not change that event's category."),
+      },
+    );
+  };
+
+  const categorizeFocusBlock = (block: FocusBlock, categoryId: number | null) => {
+    moveFocus.mutate(
+      { id: block.id, patch: { categoryId } },
+      { onError: () => toast.error("Could not change that block's category.") },
+    );
+  };
+
+  /** Drag empty space: open the dialog for a new local event at that slot. */
+  const beginNewEvent = (start: Date, end: Date) => {
+    setEventDraft({
+      mode: "event",
+      title: "",
+      start: start.toISOString(),
+      end: end.toISOString(),
+      allDay: false,
+      categoryId: null,
+    });
+  };
+
+  /** Edit an event saved here: its own row carries title, times and all-day. */
+  const editCalendarEvent = (event: CalendarEvent) => {
+    const start = event.allDay ? event.start.slice(0, 10) : new Date(event.start).toISOString();
+    const end = event.allDay ? event.end.slice(0, 10) : new Date(event.end).toISOString();
+
+    setEventDraft({
+      mode: "event",
+      cacheId: event.cacheId,
+      title: event.title,
+      start,
+      end,
+      allDay: event.allDay,
+      categoryId: event.category?.id ?? null,
+    });
+  };
+
+  const updateEventDraft = (patch: Partial<EventDraft>) => {
+    setEventDraft((current) => (current === null ? current : { ...current, ...patch }));
+  };
+
+  const switchEventDraftMode = () => {
+    setEventDraft((current) =>
+      current === null
+        ? current
+        : { ...current, mode: current.mode === "event" ? "focus" : "event", allDay: false },
+    );
+  };
+
+  const saveEventDraft = () => {
+    const draft = eventDraft;
+    if (draft === null || draft.title.trim() === "") return;
+
+    const title = draft.title.trim();
+    const start = draft.allDay ? draft.start.slice(0, 10) : new Date(draft.start).toISOString();
+    const end = draft.allDay ? draft.end.slice(0, 10) : new Date(draft.end).toISOString();
+
+    const done = (message: string) => () => {
+      setEventDraft(null);
+      toast.success(message);
+    };
+    const failed = (message: string) => () => toast.error(message);
+
+    if (draft.cacheId !== undefined) {
+      updateCalendarEvent.mutate(
+        { cacheId: draft.cacheId, title, start, end, allDay: draft.allDay, categoryId: draft.categoryId },
+        {
+          onSuccess: done(`Updated "${title}"`),
+          onError: failed("Could not update that event."),
+        },
+      );
+      return;
+    }
+
+    if (draft.mode === "focus") {
+      createFocus.mutate(
+        { title, start, end, categoryId: draft.categoryId },
+        {
+          onSuccess: done(`Created "${title}"`),
+          onError: failed("Could not create that block."),
+        },
+      );
+      return;
+    }
+
+    createEvent.mutate(
+      { title, start, end, allDay: draft.allDay, categoryId: draft.categoryId },
+      {
+        onSuccess: done(`Created "${title}"`),
+        onError: failed("Could not create that event. Connect a Google account to save events here."),
+      },
+    );
+  };
+
   const completeTask = (task: SideTask, completed: boolean) => {
     updateTask.mutate(
       { id: task.id, patch: { completed } },
@@ -643,6 +769,15 @@ function CalendarPage() {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => setCategoriesOpen(true)}
+            title="Manage the categories for tasks, events and focus blocks"
+          >
+            <Tags className="h-4 w-4" />
+            <span className="ml-1 font-mono text-xs uppercase">categories</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             disabled={syncCalendars.isPending || (accounts.data ?? []).every((a) => a.disconnected)}
             onClick={() => runSync()}
             title="Fetch the latest events from Google (manual refresh)"
@@ -693,6 +828,8 @@ function CalendarPage() {
                 events={events}
                 focusBlocks={focusBlocks}
                 tasks={tasks}
+                categories={categories}
+                accounts={accounts.data ?? []}
                 placingId={placingId}
                 sessions={calendarSessions}
                 todaySlots={budget.isRequiredDay ? budget.slots : []}
@@ -703,6 +840,8 @@ function CalendarPage() {
                 onDeleteEvent={removeEvent}
                 onDuplicateEvent={duplicateCalendarEvent}
                 onSetEventColor={colorCalendarEvent}
+                onSetEventCategory={categorizeCalendarEvent}
+                onEditEvent={editCalendarEvent}
                 onPlaceTask={placeTask}
                 onScheduleTask={scheduleTask}
                 onMoveFocus={moveFocusBlock}
@@ -712,22 +851,8 @@ function CalendarPage() {
                 onUnplaceTask={unplaceTask}
                 onMoveTask={togglePlacing}
                 onCancelPlacing={() => setPlacingId(null)}
-                onCreateFocus={async (start, end) => {
-                  const title = await prompt({
-                    title: "New work block",
-                    label: "Block name",
-                    defaultValue: "Focus block",
-                    placeholder: "Focus block",
-                    confirmLabel: "Create block",
-                  });
-                  if (title === null) return;
-
-                  createFocus.mutate({
-                    title: title.trim() || "Focus block",
-                    start: start.toISOString(),
-                    end: end.toISOString(),
-                  });
-                }}
+                onCreateEvent={beginNewEvent}
+                onSetFocusCategory={categorizeFocusBlock}
                 onDeleteFocus={async (b) => {
                   const confirmed = await confirm({
                     title: "Delete this block?",
@@ -747,10 +872,10 @@ function CalendarPage() {
             </>
           )}
           <p className="mt-3 font-mono text-[11px] text-mut">
-            Drag empty space to plan · Drag an event, task or block to another time or day · Drag a block's top or bottom
-            edge to resize it · Click an event to mark it as work (adds a tracked session) · Right-click to reset · The ⋯
-            menu copies an event to the next day and recolors it · Click a green gap to log that time · Drag a side task
-            onto a day to schedule it
+            Drag empty space to create an event or focus block · Drag an event, task or block to another time or day ·
+            Drag a block's top or bottom edge to resize it · Click an event to mark it as work (adds a tracked session) ·
+            Right-click to reset · The ⋯ menu copies an event to the next day, puts it in a category and recolors it ·
+            Click a green gap to log that time · Drag a side task onto a day to schedule it
           </p>
         </div>
 
@@ -764,15 +889,18 @@ function CalendarPage() {
           />
           <TodoCard
             tasks={tasks}
+            categories={categories}
             now={now}
             coachContext={coachContext}
             placingId={placingId}
             onTogglePlacing={togglePlacing}
             onDelete={removeTask}
+            onManageCategories={() => setCategoriesOpen(true)}
           />
           <BudgetCard budget={budget} />
           <AccountsCard
             accounts={accounts.data ?? []}
+            categories={categories}
             hidden={hidden}
             syncing={syncCalendars.isPending}
             syncingAccountId={syncingAccountId}
@@ -790,6 +918,19 @@ function CalendarPage() {
                 },
               )
             }
+            onSetDefaultCategory={(id, categoryId) =>
+              updateAccount.mutate(
+                { id, defaultCategoryId: categoryId },
+                {
+                  onSuccess: () =>
+                    toast.success(
+                      categoryId === null
+                        ? "This mailbox no longer has a default category"
+                        : "Every event from this mailbox now starts in that category",
+                    ),
+                },
+              )
+            }
             onSync={runSync}
             onPurge={(id) =>
               purgeEvents.mutate(id, {
@@ -802,6 +943,20 @@ function CalendarPage() {
           <Legend />
         </aside>
       </main>
+
+      <EventDialog
+        draft={eventDraft}
+        categories={categories}
+        hasAccount={(accounts.data ?? []).some((a) => !a.disconnected)}
+        saving={createEvent.isPending || createFocus.isPending || updateCalendarEvent.isPending}
+        onManageCategories={() => setCategoriesOpen(true)}
+        onChange={updateEventDraft}
+        onClose={() => setEventDraft(null)}
+        onSwitchMode={switchEventDraftMode}
+        onSave={saveEventDraft}
+      />
+
+      <CategoriesDialog open={categoriesOpen} onOpenChange={setCategoriesOpen} categories={categories} />
 
       <CoachChatFab context={coachContext} />
     </div>

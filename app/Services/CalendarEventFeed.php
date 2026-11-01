@@ -33,7 +33,8 @@ class CalendarEventFeed
 
         // Events the user dragged keep their Google times in the cache, so the
         // override supplies the times we actually render.
-        $overrides = CalendarEventOverride::where('user_id', $user->id)->get()
+        $overrides = CalendarEventOverride::with('category')
+            ->where('user_id', $user->id)->get()
             ->keyBy(fn (CalendarEventOverride $override) => $override->calendar_account_id.'|'.$override->event_id);
 
         // A moved event can leave the window its cached row still sits in, so
@@ -47,7 +48,7 @@ class CalendarEventFeed
             ->map(fn (CalendarEventOverride $override): array => [$override->calendar_account_id, $override->event_id])
             ->values();
 
-        return CalendarEvent::with('account')
+        return CalendarEvent::with('account.defaultCategory')
             ->where('user_id', $user->id)
             ->where(function ($query) use ($from, $to, $movedKeys): void {
                 $query->where(function ($query) use ($from, $to): void {
@@ -68,6 +69,13 @@ class CalendarEventFeed
                 $override = $overrides->get($key);
                 ['isWork' => $isWork, 'source' => $workSource] = $this->workState($event, $tag, $keywords);
 
+                // An occurrence can name its own category (including "none"); only
+                // when it has no opinion does the mailbox's default apply. A local
+                // event is the user's own plan, not mail, so it never inherits one.
+                $hasCategoryOverride = (bool) $override?->category_override;
+                $accountDefault = $event->is_local ? null : $event->account?->defaultCategory;
+                $category = $hasCategoryOverride ? $override?->category : $accountDefault;
+
                 return [
                     'id' => $key,
                     'cacheId' => $event->id,
@@ -84,6 +92,10 @@ class CalendarEventFeed
                     'allDay' => $event->all_day,
                     'color' => $override?->color ?? $event->event_color,
                     'hasCustomColor' => $override?->color !== null,
+                    'category' => $category?->toApi(),
+                    'categorySource' => $hasCategoryOverride
+                        ? 'event'
+                        : ($accountDefault !== null ? 'account' : null),
                     'isLocal' => $event->is_local,
                     'isWork' => $isWork,
                     'workSource' => $workSource,

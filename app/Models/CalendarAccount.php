@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['user_id', 'provider', 'email', 'color', 'default_work', 'access_token', 'refresh_token', 'expires_at', 'last_synced_at', 'disconnected_at'])]
+#[Fillable(['user_id', 'provider', 'email', 'color', 'default_work', 'default_category_id', 'access_token', 'refresh_token', 'expires_at', 'last_synced_at', 'disconnected_at'])]
 #[Hidden(['access_token', 'refresh_token'])]
 class CalendarAccount extends Model
 {
@@ -36,6 +36,14 @@ class CalendarAccount extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * The category every event from this mailbox inherits unless it has its own.
+     */
+    public function defaultCategory(): BelongsTo
+    {
+        return $this->belongsTo(Category::class, 'default_category_id');
     }
 
     public function tags(): HasMany

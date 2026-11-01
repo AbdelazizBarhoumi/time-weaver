@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Briefcase, Eye, EyeOff, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CategoryPicker } from "@/components/CategoryPicker";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import {
@@ -14,6 +15,7 @@ import {
   type DayBudget,
   type WorkableTimeLeft,
 } from "@/lib/calendar";
+import type { Category } from "@/lib/categories";
 import { formatHM, formatHMS, formatTime } from "@/lib/tracker";
 
 /** Live countdown: how long you can still work today, from now until work end. */
@@ -135,16 +137,20 @@ export function BudgetCard({ budget }: { budget: DayBudget }) {
 
 export function AccountsCard({
   accounts,
+  categories,
   hidden,
   syncing,
   syncingAccountId,
   onToggleVisibility,
   onToggleDefaultWork,
+  onSetDefaultCategory,
   onSync,
   onPurge,
   onRestoreHidden,
 }: {
   accounts: CalendarAccount[];
+  /** The user's categories, offered as each mailbox's default. */
+  categories: Category[];
   hidden: Set<number>;
   /** Any sync is running — the row buttons wait for it. */
   syncing: boolean;
@@ -152,6 +158,8 @@ export function AccountsCard({
   syncingAccountId: number | null;
   onToggleVisibility: (id: number) => void;
   onToggleDefaultWork: (id: number, defaultWork: boolean) => void;
+  /** Give every event from this mailbox a default category; null clears it. */
+  onSetDefaultCategory: (id: number, categoryId: number | null) => void;
   onSync: (accountId?: number) => void;
   onPurge: (id: number) => void;
   onRestoreHidden: (id: number) => void;
@@ -217,6 +225,17 @@ export function AccountsCard({
                   </button>
                 </span>
               )}
+              <span className="mt-1 block font-mono text-[9px] uppercase tracking-wider text-mut">
+                <span className="mr-1">default</span>
+                <CategoryPicker
+                  categories={categories}
+                  value={a.defaultCategory?.id ?? null}
+                  onChange={(categoryId) => onSetDefaultCategory(a.id, categoryId)}
+                  disabled={a.disconnected ?? false}
+                  title="None"
+                  className="py-0.5 tracking-normal"
+                />
+              </span>
             </span>
             <button
               type="button"

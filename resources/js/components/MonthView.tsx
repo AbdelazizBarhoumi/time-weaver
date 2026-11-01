@@ -4,6 +4,7 @@ import {
   dayInterval,
   eventAccent,
   eventBackground,
+  eventTheme,
   isWorkDay,
   monthGrid,
   sameDay,
@@ -17,6 +18,7 @@ import {
   type FocusBlock,
   type Interval,
 } from "@/lib/calendar";
+import { categoryIcon } from "@/lib/categories";
 import { DAILY_GOAL_HOURS, formatHM, formatTime } from "@/lib/tracker";
 
 interface Props {
@@ -155,20 +157,27 @@ export function MonthView({ month, now, settings, events, focusBlocks, trackedIn
                     </span>
                   );
                 })}
-                {dayEvents.slice(0, eventLimit).map((e) => (
-                  <span
-                    key={e.id}
-                    className={cn("truncate rounded px-1 py-0.5 text-[10px]", e.isWork ? "text-neon" : "text-ink")}
-                    style={{
-                      // A color the user picked wins over the neutral work fill.
-                      background: e.hasCustomColor || !e.isWork ? eventBackground(e) : "var(--l2)",
-                      borderLeft: `2px solid ${e.hasCustomColor || !e.isWork ? eventAccent(e) : "var(--neon)"}`,
-                    }}
-                  >
-                    {!e.allDay && <span className="mr-1 font-mono text-mut">{formatTime(e.start)}</span>}
-                    {e.title}
-                  </span>
-                ))}
+                {dayEvents.slice(0, eventLimit).map((e) => {
+                  const themed = eventTheme(e);
+                  const Icon = categoryIcon(e.category?.icon);
+                  return (
+                    <span
+                      key={e.id}
+                      className={cn("flex items-center gap-1 truncate rounded px-1 py-0.5 text-[10px]", e.isWork ? "text-neon" : "text-ink")}
+                      style={{
+                        // A category or a color the user picked wins over the neutral work fill.
+                        background: themed?.background ?? (e.hasCustomColor || !e.isWork ? eventBackground(e) : "var(--l2)"),
+                        borderLeft: themed?.borderLeft ?? (e.hasCustomColor || !e.isWork ? `2px solid ${eventAccent(e)}` : "2px solid var(--neon)"),
+                        boxShadow: themed?.boxShadow,
+                      }}
+                      title={e.category ? `${e.title} · ${e.category.name}` : e.title}
+                    >
+                      {e.category && <Icon className="h-2.5 w-2.5 shrink-0" style={{ color: themed?.accent }} />}
+                      {!e.allDay && <span className="font-mono text-mut">{formatTime(e.start)}</span>}
+                      <span className="truncate">{e.title}</span>
+                    </span>
+                  );
+                })}
                 {dayEvents.length > eventLimit && (
                   <span className="px-1 font-mono text-[10px] text-mut">+{dayEvents.length - eventLimit} more</span>
                 )}

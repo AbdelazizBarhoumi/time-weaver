@@ -5,6 +5,7 @@ use App\Http\Controllers\CalendarAccountController;
 use App\Http\Controllers\CalendarEventController;
 use App\Http\Controllers\CalendarInsightController;
 use App\Http\Controllers\CalendarSettingsController;
+use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\DayOffController;
 use App\Http\Controllers\FocusBlockController;
 use App\Http\Controllers\ReportController;
@@ -48,6 +49,7 @@ Route::middleware('auth:web')->group(function () {
 
     // Calendar: events and manual work tags
     Route::get('calendar/events', [CalendarEventController::class, 'index']);
+    Route::post('calendar/events', [CalendarEventController::class, 'store']);
     Route::post('calendar/sync', [CalendarEventController::class, 'sync']);
     Route::put('calendar/events/{event}', [CalendarEventController::class, 'update']);
     Route::delete('calendar/events/{event}', [CalendarEventController::class, 'destroy']);
@@ -70,6 +72,12 @@ Route::middleware('auth:web')->group(function () {
     Route::post('side-tasks/plan', [SideTaskController::class, 'plan']);
     Route::put('side-tasks/{task}', [SideTaskController::class, 'update']);
     Route::delete('side-tasks/{task}', [SideTaskController::class, 'destroy']);
+
+    // Calendar: user-defined visual categories for tasks, events and focus blocks
+    Route::get('categories', [CategoryController::class, 'index']);
+    Route::post('categories', [CategoryController::class, 'store']);
+    Route::put('categories/{category}', [CategoryController::class, 'update'])->whereNumber('category');
+    Route::delete('categories/{category}', [CategoryController::class, 'destroy'])->whereNumber('category');
 
     // Work tasks: the home-page list, with derived status and tracked time
     Route::get('work-tasks', [WorkTaskController::class, 'index']);
